@@ -1,0 +1,8 @@
+.git
+**/node_modules
+**/target
+**/.cpcache
+**/test-results
+**/playwright-report
+.env
+.DS_Store
