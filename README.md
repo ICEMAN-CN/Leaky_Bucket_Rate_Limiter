@@ -1,54 +1,86 @@
-# 漏桶限流器
+# Leaky Bucket Rate Limiter
 
-后端作业。一份可独立运行的 Clojure 正式答卷，一份 Go + Redis 双实例扩展，以及一个可以发送真实流量的中文操作台。默认每个用户拥有容量 **5**、每秒漏出 **1** 单位的桶。
+A small REST service that decides whether a user can make one more request now. The Clojure implementation is the standalone answer to the programming exercise. A separate Go implementation demonstrates how to preserve a user's quota across two application instances. Both run against the same set of time-based examples.
 
-## 五分钟验收
+[简体中文项目指南](README.zh-CN.md) · [中文代码导读与面试演示](docs/interview.md)
 
-在仓库根目录运行命令，需要已启动的 Docker 引擎、Docker Compose v2 或更高版本和 Make。首次构建需要联网下载依赖；本机无需安装 Clojure、Go、Node 或 Redis。
+## Run the assignment
 
-| 命令 | 用途 |
-| --- | --- |
-| `make standard` | 只运行 Clojure 正式答卷，打印可复制的 curl 示例 |
-| `make test-standard` | 单独运行标准答案的核心、HTTP 和 Jetty 测试 |
-| `make up` | 构建并启动两个版本与操作台，等待服务健康后打印地址 |
-| `make demo` | 在已启动的完整环境中执行三组真实请求，现场检查预期结果 |
-| `make test` | 用独立 Compose 项目运行所有测试，含真实 Redis、浏览器及停机恢复演练；结束后清理测试容器与卷 |
-| `make deploy` | 在当前 Linux Docker 主机部署同一套服务，使用重启策略、健康检查与 Redis 数据卷 |
-| `make status` / `make down` | 查看实例状态 / 关闭当前项目并保留数据卷 |
+Run the following commands from the repository root. You need Make, a running Docker engine and the Docker Compose plugin with support for `up --wait`.
 
-默认[演示操作台](http://127.0.0.1:8080)使用 8080 端口，Clojure 使用 8081，Go 集群入口使用 8082。在操作台点击「验证跨实例共享」，可以看到 A 写入后 B 查到同一个桶，两个实例交替处理请求直到额度耗尽。用下方 curl 在页面外打流量，操作台也会采样。三个发布端口均仅绑定回环地址，Redis 和单个 Go 副本仅在 Compose 网络内访问。
+```sh
+make standard       # Start only the Clojure service on 127.0.0.1:8081
+make test-standard  # Run the Clojure core, HTTP and Jetty tests
+```
+
+The first build downloads dependencies. The container includes the JVM and the application libraries. These two calls submit a request and then read the recorded decision state.
 
 ```sh
 curl -i http://127.0.0.1:8081/v1/check \
   -H 'Content-Type: application/json' -d '{"user_id":"alice"}'
+
 curl -s http://127.0.0.1:8081/v1/buckets/alice
 ```
 
-![使用真实流量运行的操作台，展示准入趋势、实例状态与请求实验](docs/console.png)
+For a new user with the default settings, the first call returns HTTP 200. The example below uses an illustrative Unix timestamp.
 
-## 核心接口和行为
+```json
+{"allowed":true,"instance":"clojure","bucket":{"level":1,"as_of":1700000000,"capacity":5,"leak_rate":1.0}}
+```
 
-标准答案从 [核心函数](standard/src/limiter/core.clj) 开始阅读。核心的三个公开函数是 `create-rate-limiter`、`allow-request`、`get-bucket-state`。每个请求按 `max(0, 上次水位 − 漏速 × 经过秒数)` 结算，再尝试加一。结果等于容量时仍允许。核心显式接受 Unix 秒，HTTP 入口自己取时间。服务对一次检查立即给出决定，空桶可以瞬间吸收一个容量大小的突发。
+## How admission works
 
-| HTTP 操作 | 返回 |
+One limiter owns a map of independent user buckets. Each request costs one unit. The core computes the elapsed time since that user's last decision, subtracts the leaked amount, clamps the level at zero, and allows the request when adding one stays within capacity. A rejected request still settles elapsed time. If the clock moves backwards, the last settlement time is retained.
+
+| Time in seconds | Request for Alice, capacity 5 and leak rate 1/s | Decision and recorded level |
+| --- | --- | --- |
+| 0 | Five requests arrive together | All five pass; level 5 |
+| 0 | Sixth request | 429; level 5 |
+| 0.5 | Another request | 429; level 4.5 |
+| 1 | Another request | 200; level 5 |
+
+A new user can still spend their full quota at any point in this example. The calculation runs on demand, so there is no background timer or request queue. The [Clojure core](standard/src/limiter/core.clj) exposes the three functions from the exercise. `allow-request` takes a Unix timestamp and returns the decision and a new immutable limiter. Only the [HTTP adapter](standard/src/limiter/http.clj) reads the clock and commits the new state. A short critical section serializes competing Jetty requests.
+
+## HTTP contract
+
+Use `Content-Type: application/json` on POST. Both request bodies accept one field, a nonempty string named `user_id`, and have a 64 KiB size limit. Time is assigned by the server.
+
+| Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/check`，JSON 为 `{"user_id":"alice"}` | `200` 放行，`429` 配额耗尽；均返回 `allowed`、`instance` 和 `bucket` |
-| `GET /v1/buckets/{用户ID}` | `200` 和最近结算快照；未知桶 `404`。路径段中的特殊字符需要 URL 编码 |
-| `GET /livez`、`GET /readyz` | 检查进程存活、业务依赖就绪。Go 在 Redis 故障时仍可提供存活状态和指标 |
+| `POST /v1/check` | Returns 200 when allowed or 429 when the bucket is full. Both include the resulting bucket snapshot. An invalid request returns 400. |
+| `GET /v1/buckets/{user_id}` | Returns the most recently settled snapshot or 404 for an unknown bucket. URL-encode the user ID as one path segment. |
+| `POST /v1/bucket-state` | Read-only lookup with the same JSON body as a check. Use it for long IDs and IDs such as `.` or `..` that browsers normalize in paths. Reading consumes no quota and creates no bucket. |
+| `GET /livez`, `GET /readyz` | Process liveness and service readiness. Go readiness includes a Redis connectivity check. |
 
-水位快照包含 `level`、Unix 秒 `as_of`、`capacity` 和 `leak_rate`。调试查询不会推进时间或创建桶。空 ID、Client 时间戳等无效请求返回 `400`。Redis 超时或不可用返回 `503`，调用方可能无法确认本次写入是否已经完成。
+The snapshot's `level` is measured at `as_of`, expressed in Unix seconds. Refreshing the lookup returns the same stored values until another decision or Redis key expiry. The Clojure core returns `nil` for an unknown user. HTTP represents that outcome as 404.
 
-## 设计取舍
+## Run the distributed demo
 
-- **标准版**用不可变 map 表达每次状态转移。Jetty 适配层仅在提交时进入临界区，让一次 HTTP 答复对应一次成功提交。时间由测试直接传入，无需定时线程。单进程重启会清空所有桶；保留用户记录使历史快照可查，内存随用户数增长。
-- **分布式版**由 HAProxy 分发给 Go A 和 Go B。Redis 在同一个脚本中读取服务端时间、结算和写入单用户的桶。读快照不修改键。键在计算出的排空时刻之后回收，回收后的 GET 返回 404。Redis 写入结果不明时返回 503，禁止盲重试。副本按相同容量、漏速配置运行。
-- **监控**逐实例读取内部计数及延迟直方图，每 2 秒采样，保留最近 30 分钟。只计有效的准入调用，429 与服务端错误分别展示。p95 取合并直方图的分箱上界。只统计有连续采样的区间；实例重启和采集中断会在页面留下缺口。操作台重启后重新采集。
-- **部署**能容忍单个 Go 进程退出。宿主机和单 Redis 仍是故障点。Redis 使用 AOF 每秒刷盘和持久卷；非正常掉电可能丢失最近写入。更严格的服务目标需要独立故障域和对故障切换期间配额误差的明确约定。本项目的停机测试验证正常停止、恢复和降级响应。
+| Command | Result |
+| --- | --- |
+| `make up` | Build and start Clojure, Go A and B, HAProxy, Redis and the console. Print the live URLs when healthy. |
+| `make demo` | Send real requests to demonstrate recovery, user isolation and shared quota across replicas. |
+| `make test` | Run the full suite in an isolated Compose project with ephemeral host ports and a separate Redis volume. |
+| `make deploy` | Start the same stack on the current Docker host. Published ports bind to loopback. |
+| `make status` / `make down` | Inspect service health or stop the stack while retaining the Redis volume. |
 
-## 测试与配置
+Open the [local console](http://127.0.0.1:8080/) or send requests directly to the Go gateway on port 8082. In the console, **验证跨实例共享** runs the shared-quota scenario. Go A accepts the first request, Go B reads its snapshot, and subsequent requests alternate between them. **请求实验** opens the manual request controls.
 
-[共享测试数据](contracts/cases.json)定义时间线和预期结果，两个版本运行同一份数据。全套验收另外覆盖双实例同用户并发 100 次、不同用户隔离、状态读取、应用实例下线、Redis 停止与恢复、页面交互、监控采集和刷新保留。测试使用临时端口、独立 Redis 和数据卷，不会停止正在演示的服务。
+![Console showing real admission traffic, instance health and a user's bucket](docs/console.png)
 
-`CAPACITY` 和 `LEAK_RATE` 可以在运行 Make 前设置。默认端口可用 `CONSOLE_PORT`、`STANDARD_PORT` 和 `GO_PORT` 修改。基于现有持久卷变更策略前，须考虑旧桶是按旧配置写入的；面试演示建议使用默认配置。远程 Linux 上执行 `make deploy` 后，可从个人电脑运行 `ssh -L 8080:127.0.0.1:8080 用户@主机` 访问服务器操作台。
+### Design and operational limits
 
-初次接触 Clojure 可以从[面试讲解与演示脚本](docs/interview.md)开始。
+- **State and clock.** Each Clojure process keeps historical user entries until restart. The Go service runs one Lua script per admission to read Redis time, settle a user's bucket and commit the decision atomically. The key expires when its level can drain to zero. A lookup of a reclaimed key returns 404. [Redis implementation](distributed/check.lua)
+- **Failure behavior.** HAProxy routes traffic to the surviving Go instance after detecting a process failure. If Redis is unavailable, Go returns 503. A timeout can arrive after Redis has applied a write, so the service avoids automatically retrying a decision with an unknown outcome. When both Go instances are down the gateway identifies itself in the JSON 503 response. [Gateway configuration](ops/haproxy.cfg) · [HAProxy error response directive](https://docs.haproxy.org/3.2/configuration.html#4-http-error)
+- **Availability boundary.** The deployment uses one Docker host and one Redis server. Redis uses an AOF volume with a one-second fsync policy. The tests exercise process loss, clean Redis shutdown and recovery. A host or storage failure can lose recent decisions and requires a separate recovery design.
+- **Observability.** The console polls each instance every two seconds and keeps 30 minutes of history in memory. It tracks admission requests received by the application instances from any client. Rejections and service errors have separate counters. If HAProxy answers a request because both replicas are offline, the manual request log shows that response and the replica charts show a sampling gap. The p95 is a histogram bucket upper bound for the selected instances. The UI marks partial or missing sampling intervals. [Collector](console/monitor.go)
+
+**Changing the policy.** Redis records the capacity and leak rate with each bucket. A busy bucket keeps its original settings across a rolling update. Once it drains, its next request adopts the settings of the instance handling that request. A continuously busy user can therefore stay on the previous policy. The snapshot reports the policy actually used. New buckets may receive either policy while a mixed rollout is in progress.
+
+If upgrading an existing volume from the original untagged bucket format, deploy the new code to **both** Go instances with the existing settings first. Before changing them, allow one full bucket drain time (`capacity / leak_rate` seconds plus 1 ms) after the last old process stops. Accessed buckets acquire their original policy, and unaccessed buckets expire. A legacy bucket without a finite Redis TTL needs an explicit migration.
+
+Capacity and leak rate default to `CAPACITY=5` and `LEAK_RATE=1.0`. Host port overrides are `STANDARD_PORT`, `GO_PORT` and `CONSOLE_PORT`. Run `make up` after changing settings. For a remote demo, run `make deploy` on the Linux host and open an SSH tunnel, for example `ssh -L 8080:127.0.0.1:8080 user@host`.
+
+## What the tests establish
+
+The [shared contract cases](contracts/cases.json) cover bursts, fractional leakage, clock rollback, user isolation and the exact admission boundary after repeated rejections. The isolated suite sends 100 concurrent HTTP requests for one user to two real Go containers with a leak rate slow enough to prevent one unit from draining during the test. At capacity five, exactly five requests must pass. It then stops an application instance, stops and restores Redis, and checks the responses and retained state. Browser tests exercise the console, including metrics collected while the page is closed and Redis failure reporting. Run `make test` to reproduce the checks.

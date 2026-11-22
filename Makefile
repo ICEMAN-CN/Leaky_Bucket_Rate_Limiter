@@ -7,6 +7,7 @@ COMPOSE := docker compose
 help:
 	@echo "standard  Clojure 答卷      up      完整操作台"
 	@echo "demo      运行真实场景      test    全套隔离测试"
+	@echo "test-standard             仅测试 Clojure 标准答卷"
 	@echo "deploy    当前主机部署      down    停止并保留卷"
 	@echo "status    查看服务状态"
 
