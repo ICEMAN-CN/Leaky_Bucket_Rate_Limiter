@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -66,10 +67,21 @@ func (a *app) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := "/v1/check"
+	var body io.Reader
 	if r.Method == http.MethodGet {
 		path = "/v1/buckets/" + url.PathEscape(r.PathValue("user"))
+	} else {
+		if strings.HasSuffix(r.URL.Path, "/v1/bucket-state") {
+			path = "/v1/bucket-state"
+		}
+		// 先读完有界请求体，避免把读取客户端输入的错误误报为上游不可用。
+		payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			jsonReply(w, 400, map[string]string{"error": "invalid_request", "instance": target})
+			return
+		}
+		body = bytes.NewReader(payload)
 	}
-	body := http.MaxBytesReader(w, r.Body, 65536)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, base+path, body)
 	if err != nil {
 		jsonReply(w, 400, map[string]string{"error": "请求无效"})
@@ -97,6 +109,7 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) { jsonReply(w, 200, map[string]bool{"up": true}) })
 	m.HandleFunc("GET /api/history", a.history)
 	m.HandleFunc("POST /api/targets/{target}/v1/check", a.proxy)
+	m.HandleFunc("POST /api/targets/{target}/v1/bucket-state", a.proxy)
 	m.HandleFunc("GET /api/targets/{target}/v1/buckets/{user}", a.proxy)
 	m.HandleFunc("POST /api/scenarios/{name}", a.scenarioHTTP)
 	web, _ := fs.Sub(assets, "web")

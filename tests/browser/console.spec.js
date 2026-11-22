@@ -54,6 +54,25 @@ test.describe("操作台", () => {
     await expect(ui.log.getByRole("row")).toHaveCount(1);
   });
 
+  test("手动查桶保留点段、特殊字符和长用户 ID", async ({ page }) => {
+    const ui = new ConsolePage(page);
+    await ui.open();
+    for (const user of [".", "..", "甲 /+?%#", "long-" + "x".repeat(9000)]) {
+      await ui.user.fill(user);
+      const sent = page.waitForResponse((response) => response.url().endsWith("/v1/check"));
+      await ui.button("发送一次").click();
+      const admitted = await (await sent).json();
+      const read = page.waitForResponse((response) => response.url().endsWith("/v1/bucket-state"));
+      await ui.button("查询水位").click();
+      const response = await read;
+      expect(response.request().method()).toBe("POST");
+      expect(response.request().postDataJSON()).toEqual({ user_id: user });
+      expect(response.status()).toBe(200);
+      expect((await response.json()).bucket).toEqual(admitted.bucket);
+      await expect(page.getByText("已读取最近结算的桶快照。")).toBeVisible();
+    }
+  });
+
   for (const name of ["漏水恢复", "用户隔离", "跨实例共享"]) {
     test("真实限流实验 · " + name, async ({ page }) => {
       const ui = new ConsolePage(page);
@@ -113,7 +132,7 @@ test.describe("操作台", () => {
         json: {
           interval_seconds: 2,
           window_seconds: 1800,
-          instances: [],
+          instances: [{ id: "go-b", at: now, up: false, ready: true }],
           points: [
             {
               at: now - 2,
@@ -124,7 +143,7 @@ test.describe("操作台", () => {
               p95_ms: null,
               partial: true,
             },
-            { at: now, allowed: 3, limited: 1, errors: 1, rps: 2.5, p95_ms: -1, partial: false },
+            { at: now, allowed: 3, limited: 1, errors: 1, rps: 2.5, p95_ms: -1, partial: true },
           ],
         },
       });
@@ -132,6 +151,10 @@ test.describe("操作台", () => {
     await ui.open();
     await expect(ui.metric("P95 耗时")).toHaveText(">500");
     await expect(ui.metric("放行请求")).toHaveText("3");
+    await expect(ui.health).toContainText("就绪 · 指标缺失");
+    await expect(page.getByText("1 / 1 就绪", {exact: true})).toBeVisible();
+    await expect(page.getByText("次 / 秒 · 部分实例", { exact: true })).toBeVisible();
+    await expect(page.getByText("毫秒 · 部分实例上界", { exact: true })).toBeVisible();
     await expect(page.getByText("统计仅包含已采集的请求", { exact: false })).toBeVisible();
     await page.getByText("最近采样明细", { exact: true }).click();
     const missing = page

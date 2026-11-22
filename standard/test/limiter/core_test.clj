@@ -1,11 +1,12 @@
 (ns limiter.core-test
-  (:require [clojure.data.json :as json]
+  (:require [jsonista.core :as json]
             [clojure.test :refer [deftest is testing]]
             [limiter.core :as core]))
 
 (deftest shared-contract
   (doseq [{:keys [name capacity leak_rate steps]}
-          (json/read-str (slurp "../contracts/cases.json") :key-fn keyword :bigdec true)]
+          (json/read-value (slurp "../contracts/cases.json" :encoding "UTF-8")
+                           (json/object-mapper {:decode-key-fn true :bigdecimals true}))]
     (testing name
       (reduce (fn [limiter {:keys [user_id timestamp allowed level as_of]}]
                 (let [[actual next-state] (core/allow-request limiter user_id timestamp)
@@ -30,3 +31,13 @@
 (deftest invalid-configurations
   (doseq [[capacity rate] [[0 1] [-1 1] [1.5 1] [1 0] [1 ##NaN] [1 ##Inf]]]
     (is (thrown? IllegalArgumentException (core/create-rate-limiter capacity rate)))))
+
+(deftest microsecond-boundary-at-a-real-epoch
+  (let [start 1760000000.123456M
+        full (second (core/allow-request (core/create-rate-limiter 1 10) "u" start))
+        [early? partial] (core/allow-request full "u" (+ start 0.099999M))
+        [on-time? next-state] (core/allow-request partial "u" (+ start 0.100000M))]
+    (is (false? early?))
+    (is (== 0.000010M (:level (core/get-bucket-state partial "u"))))
+    (is on-time?)
+    (is (== 1 (:level (core/get-bucket-state next-state "u"))))))

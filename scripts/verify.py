@@ -56,6 +56,13 @@ def api():
         expect(url, "/v1/check", 400, {"user_id": 3})
         first = expect(url, "/v1/check", 200, {"user_id": user})
         assert first["allowed"] and expect(url, path, 200)["bucket"] == first["bucket"]
+        assert expect(url, "/v1/bucket-state", 200, {"user_id": user})["bucket"] == first["bucket"]
+        for special in (".", "..", "长" * 7000):
+            body = {"user_id": special}
+            expect(url, "/v1/bucket-state", 404, body)
+            stored = expect(url, "/v1/check", 200, body)["bucket"]
+            for _ in range(2):
+                assert expect(url, "/v1/bucket-state", 200, body)["bucket"] == stored
         # 冷启动时首个请求可能较慢。在一个可测量的恢复窗口内才断言准确数量。
         for _ in range(3):
             burst = {"user_id": "api-" + uuid.uuid4().hex}
@@ -122,7 +129,15 @@ def restored():
     assert expect(GO, "/v1/buckets/" + FAIL_USER, 200)["bucket"]["level"] > 1
 
 
+def gateway_outage():
+    def both_unavailable():
+        value = expect(GO, "/v1/check", 503, {"user_id": FAIL_USER})
+        return value == {"instance": "gateway", "error": "no_backend_available"}
+    until(both_unavailable)
+    expect(CLJ, "/v1/check", 200, {"user_id": "gateway-independent"})
+
+
 if __name__ == "__main__":
     phase = sys.argv[1]
-    {"api": api, "seed": seed, "failover": failover, "outage": outage, "restored": restored}[phase]()
+    {"api": api, "seed": seed, "failover": failover, "outage": outage, "restored": restored, "gateway_outage": gateway_outage}[phase]()
     print(f"通过 {phase}", flush=True)

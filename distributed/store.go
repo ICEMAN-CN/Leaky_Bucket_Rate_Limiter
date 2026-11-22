@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"time"
@@ -79,11 +80,11 @@ func (s *redisStore) check(ctx context.Context, user string) (bool, bucket, erro
 	defer cancel()
 	// 仅在 Redis 明确回答 NOSCRIPT 时，客户端才从 EVALSHA 切换为 EVAL。
 	values, err := decideScript.Run(ctx, s.client, []string{bucketKey(user)}, s.capacity,
-		s.period.units, s.period.micros, s.period.compact).Slice()
+		s.period.units, s.period.micros, s.period.compact, s.rate).Slice()
 	if err != nil {
 		return false, bucket{}, err
 	}
-	if len(values) != 3 {
+	if len(values) != 5 {
 		return false, bucket{}, fmt.Errorf("Redis 返回的判定字段不完整")
 	}
 	allowed, ok := values[0].(int64)
@@ -97,7 +98,7 @@ func (s *redisStore) check(ctx context.Context, user string) (bool, bucket, erro
 func (s *redisStore) get(ctx context.Context, user string) (*bucket, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	values, err := s.client.HMGet(ctx, bucketKey(user), "level", "at_us").Result()
+	values, err := s.client.HMGet(ctx, bucketKey(user), "level", "at_us", "capacity", "leak_rate").Result()
 	if err != nil {
 		return nil, err
 	}
@@ -122,5 +123,22 @@ func (s *redisStore) decode(values []any) (bucket, error) {
 	if err != nil {
 		return bucket{}, err
 	}
-	return bucket{level, float64(micros) / 1e6, s.capacity, s.rate}, nil
+	b := bucket{level, float64(micros) / 1e6, s.capacity, s.rate}
+	// 旧格式没有策略快照；升级时所有副本需先沿用原配置。
+	if len(values) == 4 && (values[2] != nil || values[3] != nil) {
+		capacity, okCapacity := values[2].(string)
+		rate, okRate := values[3].(string)
+		if !okCapacity || !okRate {
+			return bucket{}, fmt.Errorf("Redis 桶的策略字段不完整")
+		}
+		b.Capacity, err = strconv.Atoi(capacity)
+		if err != nil || b.Capacity < 1 {
+			return bucket{}, fmt.Errorf("Redis 桶的容量无效")
+		}
+		b.LeakRate, err = strconv.ParseFloat(rate, 64)
+		if err != nil || b.LeakRate <= 0 || math.IsNaN(b.LeakRate) || math.IsInf(b.LeakRate, 0) {
+			return bucket{}, fmt.Errorf("Redis 桶的漏速无效")
+		}
+	}
+	return b, nil
 }

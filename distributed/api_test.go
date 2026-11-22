@@ -67,8 +67,10 @@ func TestAPIAndMetrics(t *testing.T) {
 	data := `{"user_id":"a/b+%"}`
 	for _, invalid := range []string{"", "null", "{}", `{"user_id":42}`, `{"user_id":""}`, `{"USER_ID":"x"}`, `{"user_id":"x","timestamp":5}`, data + data} {
 		decodeResponse[map[string]string](t, request(handler, "POST", "/v1/check", invalid), 400)
+		decodeResponse[map[string]string](t, request(handler, "POST", "/v1/bucket-state", invalid), 400)
 	}
 	decodeResponse[map[string]string](t, request(handler, "GET", "/v1/buckets/new", ""), 404)
+	decodeResponse[map[string]string](t, request(handler, "POST", "/v1/bucket-state", data), 404)
 	type decision struct {
 		Allowed  bool   `json:"allowed"`
 		Instance string `json:"instance"`
@@ -82,6 +84,10 @@ func TestAPIAndMetrics(t *testing.T) {
 	if got.Bucket != ok.Bucket {
 		t.Fatal(got)
 	}
+	byBody := decodeResponse[decision](t, request(handler, "POST", "/v1/bucket-state", data), 200)
+	if byBody != got {
+		t.Fatal(byBody, got)
+	}
 	s.allowed = false
 	rejected := decodeResponse[decision](t, request(handler, "POST", "/v1/check", data), 429)
 	if rejected.Allowed {
@@ -91,6 +97,7 @@ func TestAPIAndMetrics(t *testing.T) {
 	decodeResponse[map[string]string](t, request(handler, "POST", "/v1/check", data), 503)
 	decodeResponse[map[string]string](t, request(handler, "GET", "/readyz", ""), 503)
 	decodeResponse[map[string]string](t, request(handler, "GET", "/v1/buckets/new", ""), 503)
+	decodeResponse[map[string]string](t, request(handler, "POST", "/v1/bucket-state", data), 503)
 	decodeResponse[map[string]string](t, request(handler, "GET", "/livez", ""), 200)
 	stats := decodeResponse[measurements](t, request(handler, "GET", "/internal/metrics", ""), 200)
 	var count uint64
@@ -102,6 +109,41 @@ func TestAPIAndMetrics(t *testing.T) {
 	}
 	s.fail = false
 	decodeResponse[map[string]string](t, request(handler, "GET", "/readyz", ""), 200)
+}
+
+func TestSnapshotWithOpaqueIDs(t *testing.T) {
+	s := &stubStore{allowed: true, users: make(map[string]bucket)}
+	h := newAPI(s, "go-a")
+	for _, id := range []string{".", "..", "a?/# +%", strings.Repeat("x", 16<<10)} {
+		data, err := json.Marshal(map[string]string{"user_id": id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		type response struct {
+			Bucket bucket `json:"bucket"`
+		}
+		checked := decodeResponse[response](t, request(h, "POST", "/v1/check", string(data)), 200)
+		snapshot := decodeResponse[response](t, request(h, "POST", "/v1/bucket-state", string(data)), 200)
+		if checked != snapshot {
+			t.Fatal(checked, snapshot)
+		}
+	}
+}
+
+func TestRawUTF8UserIDs(t *testing.T) {
+	s := &stubStore{allowed: true, users: make(map[string]bucket)}
+	h := newAPI(s, "go-a")
+	invalid := "{\"user_id\":\"\xff\"}"
+	valid := `{"user_id":"�"}`
+	for _, path := range []string{"/v1/check", "/v1/bucket-state"} {
+		body := decodeResponse[map[string]string](t, request(h, "POST", path, invalid), 400)
+		if body["error"] != "invalid_request" {
+			t.Fatal(body)
+		}
+	}
+	decodeResponse[map[string]string](t, request(h, "POST", "/v1/bucket-state", valid), 404)
+	decodeResponse[map[string]any](t, request(h, "POST", "/v1/check", valid), 200)
+	decodeResponse[map[string]any](t, request(h, "POST", "/v1/bucket-state", valid), 200)
 }
 
 func TestHistogramBoundaries(t *testing.T) {

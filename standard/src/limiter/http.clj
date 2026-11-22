@@ -1,9 +1,11 @@
 (ns limiter.http
-  (:require [clojure.data.json :as json]
+  (:require [jsonista.core :as json]
             [clojure.string :as str]
             [limiter.core :as core])
-  (:import [java.io InputStream]
+  (:import [com.fasterxml.jackson.databind DeserializationFeature]
+           [java.io IOException InputStream]
            [java.net URLDecoder]
+           [java.nio ByteBuffer]
            [java.nio.charset StandardCharsets]
            [java.util UUID]))
 
@@ -11,25 +13,37 @@
   {:status status
    :headers {"Content-Type" "application/json; charset=utf-8"
              "Cache-Control" "no-store"}
-   :body (json/write-str data)})
+   :body (json/write-value-as-string data)})
 
 (defn- error-response [instance status error]
   (response status {:instance instance :error error}))
 
+(def ^:private max-body-bytes (* 64 1024))
+
+(def ^:private request-mapper
+  (doto (json/object-mapper)
+    (.enable DeserializationFeature/FAIL_ON_TRAILING_TOKENS)))
+
 (defn- read-user-id [^InputStream body]
   (when body
     (try
-      (let [bytes (.readNBytes body 65537)]
-        (when (<= (alength bytes) 65536)
-          (let [text (str/trim (String. bytes StandardCharsets/UTF_8))
-                payload (json/read-str text :extra-data-fn json/on-extra-throw)
+      (let [bytes (.readNBytes body (inc max-body-bytes))]
+        (when (<= (alength bytes) max-body-bytes)
+          (let [decoder (.newDecoder StandardCharsets/UTF_8)
+                text (str (.decode decoder (ByteBuffer/wrap bytes)))
+                payload (json/read-value text request-mapper)
                 id (get payload "user_id")]
             (when (and (map? payload) (= 1 (count payload)) (string? id) (seq id)) id))))
-      (catch Exception _ nil))))
+      (catch IOException _ nil))))
 
 (defn- decode-id [raw-id]
   ;; URLDecoder 按表单规则解释加号。路径中的字面加号属于用户 ID。
   (URLDecoder/decode (str/replace raw-id "+" "%2B") StandardCharsets/UTF_8))
+
+(defn- snapshot [state instance user-id]
+  (if-let [bucket (core/get-bucket-state @state user-id)]
+    (response 200 {:instance instance :bucket bucket})
+    (error-response instance 404 "bucket_not_found")))
 
 (defn- admit! [state user-id now]
   ;; 将一次纯函数判定与提交放在同一临界区，避免 Jetty 的线程争用最后一个名额。
@@ -70,12 +84,15 @@
         (and (= :post request-method) (= "/v1/check" uri))
         (check state metrics instance now body)
 
+        (and (= :post request-method) (= "/v1/bucket-state" uri))
+        (if-let [user-id (read-user-id body)]
+          (snapshot state instance user-id)
+          (error-response instance 400 "invalid_request"))
+
         (and (= :get request-method) (str/starts-with? uri "/v1/buckets/"))
         (if-let [[_ raw-id] (re-matches #"/v1/buckets/([^/]+)" uri)]
           (try
-            (if-let [bucket (core/get-bucket-state @state (decode-id raw-id))]
-              (response 200 {:instance instance :bucket bucket})
-              (error-response instance 404 "bucket_not_found"))
+            (snapshot state instance (decode-id raw-id))
             (catch IllegalArgumentException _
               (error-response instance 400 "invalid_request")))
           (error-response instance 404 "route_not_found"))

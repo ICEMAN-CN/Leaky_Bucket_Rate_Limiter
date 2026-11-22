@@ -47,4 +47,6 @@ dc run --rm --no-deps checks outage
 browser outage -e OUTAGE=1
 dc start redis go-a
 dc run --rm --no-deps checks restored
+dc stop -t 1 go-a go-b
+dc run --rm --no-deps checks gateway_outage
 echo '全部验收通过。'

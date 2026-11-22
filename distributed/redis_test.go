@@ -78,8 +78,73 @@ func TestRedis(t *testing.T) {
 	addr := testRedis(t)
 	t.Run("共享契约", func(t *testing.T) { checkVectors(t, addr) })
 	t.Run("空桶回收", func(t *testing.T) { checkExpiry(t, addr) })
+	t.Run("配置滚动切换", func(t *testing.T) { checkPolicyChange(t, addr) })
+	t.Run("升级旧格式的活跃桶", func(t *testing.T) { checkLegacyPolicy(t, addr) })
 	t.Run("两个HTTP实例原子扣量", func(t *testing.T) { checkConcurrent(t, addr) })
 	t.Run("存储网络中断并恢复", func(t *testing.T) { checkDisconnect(t, addr) })
+}
+
+func checkLegacyPolicy(t *testing.T, addr string) {
+	original := testStore(t, addr, 1, 0.01)
+	user := testUser(t, original.client)
+	if ok, _, err := original.check(t.Context(), user); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	// 旧版只保存水位、时间和忙期计数，不包含配置。
+	if err := original.client.HDel(t.Context(), bucketKey(user),
+		"capacity", "leak_rate", "units", "period", "compact").Err(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := original.get(t.Context(), user)
+	if err != nil || b == nil || b.Capacity != 1 || b.LeakRate != 0.01 {
+		t.Fatal(b, err)
+	}
+	if ok, _, err := original.check(t.Context(), user); ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	changed := testStore(t, addr, 5, 20)
+	b, err = changed.get(t.Context(), user)
+	if err != nil || b == nil || b.Capacity != 1 || b.LeakRate != 0.01 {
+		t.Fatal(b, err)
+	}
+}
+
+func checkPolicyChange(t *testing.T, addr string) {
+	original := testStore(t, addr, 1, 0.01)
+	changed := testStore(t, addr, 5, 20)
+	user := testUser(t, original.client)
+	if ok, _, err := original.check(t.Context(), user); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	before, err := changed.get(t.Context(), user)
+	if err != nil || before == nil || before.Capacity != 1 || before.LeakRate != 0.01 {
+		t.Fatalf("新副本读取旧桶得到 %+v，错误 %v", before, err)
+	}
+	if ok, b, err := changed.check(t.Context(), user); ok || err != nil || b.Capacity != 1 || b.LeakRate != 0.01 {
+		t.Fatalf("忙桶应继续原策略，得到 %+v，放行 %t，错误 %v", b, ok, err)
+	}
+	fresh := testUser(t, changed.client)
+	if ok, b, err := changed.check(t.Context(), fresh); !ok || err != nil || b.Capacity != 5 || b.LeakRate != 20 {
+		t.Fatal(ok, b, err)
+	}
+	// 等新建的高速桶真正排空；之后第一次请求应采纳接收它的副本的配置。
+	until := time.Now().Add(2 * time.Second)
+	for {
+		b, err := original.get(t.Context(), fresh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b == nil {
+			break
+		}
+		if b.Capacity != 5 || b.LeakRate != 20 || time.Now().After(until) {
+			t.Fatal(b)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ok, b, err := original.check(t.Context(), fresh); !ok || err != nil || b.Capacity != 1 || b.LeakRate != 0.01 {
+		t.Fatal(ok, b, err)
+	}
 }
 
 func TestDecimalLeakPeriod(t *testing.T) {

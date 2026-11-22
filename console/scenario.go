@@ -36,6 +36,15 @@ type scenario struct {
 	Rows     []row  `json:"rows"`
 }
 
+// 状态码、判定和水位需要同时成立，场景才能算作与预期一致。
+func (r row) matchesDecision(allowed bool) bool {
+	status := http.StatusTooManyRequests
+	if allowed {
+		status = http.StatusOK
+	}
+	return r.Status == status && r.Allowed != nil && *r.Allowed == allowed && r.Level != nil
+}
+
 func (a *app) step(ctx context.Context, target, user string, lookup bool) (row, *snapshot) {
 	body, _ := json.Marshal(map[string]string{"user_id": user})
 	method, path := "POST", "/v1/check"
@@ -95,7 +104,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 		target = "go-a"
 	}
 	first, b := add(target, user, false)
-	if first.Status != 200 || b == nil {
+	if !first.matchesDecision(true) || b == nil {
 		return result
 	}
 	if b.Capacity < 1 || b.Capacity > 50 || b.Rate <= 0 {
@@ -114,7 +123,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 			next = "go-b"
 		}
 		line, _ := add(next, user, false)
-		if line.Status != 200 {
+		if !line.matchesDecision(true) {
 			return result
 		}
 	}
@@ -123,7 +132,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 		rejectTarget = "go-b"
 	}
 	full, _ := add(rejectTarget, user, false)
-	if full.Status != 429 {
+	if !full.matchesDecision(false) {
 		return result
 	}
 	switch name {
@@ -141,12 +150,12 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 			return result
 		}
 		line, _ := add(target, user, false)
-		if line.Status != 200 {
+		if !line.matchesDecision(true) {
 			return result
 		}
 	case "isolation":
 		line, _ := add(target, user+"-b", false)
-		if line.Status != 200 {
+		if !line.matchesDecision(true) {
 			return result
 		}
 	}

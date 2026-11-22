@@ -615,6 +615,11 @@ td:first-child {
   color: #245540;
   background: #e4f3ec;
 }
+.record-user {
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .badge.limited {
   color: #82430c;
   background: #fff0df;

@@ -81,7 +81,7 @@ function drawChart() {
     : 0;
   const range = coverage ? Math.min(selectedRange, Math.max(30, coverage)) : selectedRange;
   byId("chart-caption").textContent = coverage
-    ? "每秒请求量 · 已采集 " + (coverage < 120 ? format(coverage) + " 秒" : format(coverage / 60) + " 分钟")
+    ? "每秒请求量 · 观测跨度 " + (coverage < 120 ? format(coverage) + " 秒" : format(coverage / 60) + " 分钟")
     : "各采样时段的请求速率";
   const start = displayEnd - range;
   const interval = historyState.interval_seconds;
@@ -123,6 +123,7 @@ function drawChart() {
   // 未知值与丢失的采样窗口必须断开，不跨缺口补画流量。
   for (const key of [...series].reverse()) {
     const dots = [];
+    const partialDots = [];
     let previous;
     ctx.beginPath();
     ctx.lineWidth = 1.7;
@@ -134,6 +135,12 @@ function drawChart() {
       }
       const px = x(point.at),
         py = y(requestRate(point, key));
+      if (point.partial) {
+        // 可见实例变少时，聚合值可能下降。用单独的空心点区分部分流量。
+        partialDots.push([px, py]);
+        previous = undefined;
+        continue;
+      }
       if (!previous || point.at - previous.at > interval * 1.75) {
         ctx.moveTo(px, py);
         dots.push([px, py]);
@@ -145,6 +152,11 @@ function drawChart() {
     ctx.stroke();
     ctx.fillStyle = colors[key];
     for (const [px, py] of dots) ctx.fillRect(px - 1, py - 1, 2, 2);
+    for (const [px, py] of partialDots) {
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
   plotBounds = { start, range, left, right };
   byId("chart-empty").hidden = usable;
@@ -182,15 +194,18 @@ function renderHealth() {
     if (entry.at > 0 && entry.up === true) {
       state = entry.ready === true ? "就绪" : entry.ready === false ? "未就绪" : "就绪状态未知";
       dot.className = "instance-dot " + (entry.ready === true ? "ok" : "warn");
+    } else if (entry.at > 0 && entry.ready === true) {
+      state = "就绪 · 指标缺失";
+      dot.className = "instance-dot warn";
     } else {
       dot.className = "instance-dot " + (entry.at > 0 && entry.up === false ? "bad" : "");
-      if (entry.at > 0 && entry.up === false) state = "不可达";
+      if (entry.at > 0 && entry.up === false) state = "探测失败";
     }
     li.append(dot, cell("strong", targets[entry.id] || entry.id), cell("span", state));
     list.append(li);
   }
   if (!instances.length) list.append(cell("li", "等待采样", "placeholder"));
-  const ready = instances.filter((entry) => entry.up && entry.ready).length;
+  const ready = instances.filter((entry) => entry.ready).length;
   byId("online").textContent = instances.length ? ready + " / " + instances.length + " 就绪" : "—";
   const last = Math.max(
     ...historyState.points.map((point) => point.at),
@@ -205,6 +220,9 @@ function renderHistory() {
   const start = displayEnd - Number(byId("watch-range").value);
   selectedPoints = points.filter((point) => point.at > start && point.at <= displayEnd);
   const latest = selectedPoints.at(-1);
+  const currentPartial = latest?.partial && Number.isFinite(latest.rps);
+  byId("rps-detail").textContent = currentPartial ? "次 / 秒 · 部分实例" : "次 / 秒 · 最近采样";
+  byId("p95-detail").textContent = currentPartial ? "毫秒 · 部分实例上界" : "毫秒 · 分桶上界";
   byId("rps").textContent = format(latest?.rps);
   byId("latency").textContent = latency(latest?.p95_ms);
   for (const key of ["allowed", "limited", "errors"]) {
@@ -217,7 +235,7 @@ function renderHistory() {
     ? "次 · 拒绝率 " + format((100 * rejected) / decisions) + "%"
     : "次 · 所选时段";
   const partial = selectedPoints.some((point) => point.partial || !Number.isFinite(point.allowed));
-  const note = partial ? "所选时段含缺失采样，统计仅包含已采集的请求。" : "";
+  const note = partial ? "所选时段含缺失采样，统计仅包含已采集的请求。空心点表示部分实例的流量。" : "";
   byId("data-note").textContent = [sampleError, note].filter(Boolean).join(" ");
   renderHealth();
   renderSamples();
@@ -275,11 +293,12 @@ function renderBucket(bucket) {
 
 function describeRow(row) {
   if (row.status === 429) return ["限流", "limited"];
-  if (row.status === 404 && row.allowed == null) return ["无桶记录", "neutral"];
+  if (row.status === 404 && row.error === "bucket_not_found") return ["无桶记录", "neutral"];
   if (!(row.status >= 200 && row.status < 300)) return ["失败", "fail"];
   if (row.allowed === true) return ["放行", ""];
   if (row.allowed === false) return ["限流", "limited"];
-  return ["已查询", "neutral"];
+  if (Number.isFinite(row.level) && (row.title === "查询" || row.operation === "GET")) return ["已查询", "neutral"];
+  return ["失败", "fail"];
 }
 
 function renderRecords() {
@@ -290,9 +309,9 @@ function renderRecords() {
     const [label, style] = describeRow(event);
     const instance = event.instance || "—";
     const destination = (targets[event.target] || event.target || "—") + " / " + instance;
-    for (const value of [event.title, event.user_id, destination, event.status || "—"]) {
-      tr.append(cell("td", value));
-    }
+    const user = cell("td", event.user_id, "record-user");
+    user.title = event.user_id;
+    tr.append(cell("td", event.title), user, cell("td", destination), cell("td", event.status || "—"));
     const outcome = document.createElement("td");
     outcome.append(cell("span", label, "badge " + style));
     tr.append(outcome, cell("td", format(event.level)), cell("td", format(event.elapsed_ms)));
@@ -320,18 +339,16 @@ function setBusy(value) {
 async function callTarget(target, user, kind) {
   const start = performance.now();
   const request = kind !== "read";
-  const path =
-    "/api/targets/" + target + "/v1/" + (request ? "check" : "buckets/" + encodeURIComponent(user));
+  const path = "/api/targets/" + target + "/v1/" + (request ? "check" : "bucket-state");
   const result = { target, user_id: user, title: request ? "请求" : "查询", status: null };
   try {
-    const options = { cache: "no-store", signal: AbortSignal.timeout(10000) };
-    if (request)
-      Object.assign(options, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: user }),
-      });
-    const response = await fetch(path, options);
+    const response = await fetch(path, {
+      method: "POST",
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user }),
+    });
     result.status = response.status;
     const data = await response.json();
     result.instance = data.instance;
@@ -361,10 +378,15 @@ async function manual(kind) {
       .sort((a, b) => a.bucket.as_of - b.bucket.as_of || a.level - b.level);
     if (snapshots.length) renderBucket(snapshots.at(-1).bucket);
     else renderBucket(null);
-    if (kind === "read" && rows[0].status === 404) {
-      setFeedback("该用户还没有可查询的桶。");
-    } else if (kind === "read" && rows[0].status === 200) {
-      setFeedback("已读取最近结算的桶快照。");
+    if (kind === "read") {
+      const row = rows[0];
+      if (row.status === 404 && row.error === "bucket_not_found") setFeedback("该用户还没有可查询的桶。");
+      else if (row.status === 200 && row.bucket) setFeedback("已读取最近结算的桶快照。");
+      else
+        setFeedback(
+          row.status ? "查询失败（HTTP " + row.status + "）。" : "查询失败，未收到有效响应。",
+          true,
+        );
     } else {
       const passed = rows.filter((row) => row.allowed === true).length;
       const limited = rows.filter((row) => row.status === 429 || row.allowed === false).length;
@@ -462,7 +484,7 @@ byId("chart").addEventListener("pointermove", (event) => {
     format(nearest.limited) +
     " / 错误 " +
     format(nearest.errors) +
-    " 次";
+    (nearest.partial ? " 次 · 部分采样" : " 次");
   tip.hidden = false;
 });
 byId("chart").addEventListener("pointerleave", () => {

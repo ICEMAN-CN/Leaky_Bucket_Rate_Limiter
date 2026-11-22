@@ -20,7 +20,8 @@ local function advance(count, anchor, previous_us, now_us, capacity, units, peri
     end
     -- 两侧同乘时间周期后比较；水位仅供展示，不作为下一次判定的输入。
     local allowed = drained >= (count + 1 - capacity) * period
+    local empty = count == 0
     if allowed then count = count + 1 end
     local level = count - drained / period
-    return allowed, level, as_of, count, anchor
+    return allowed, level, as_of, count, anchor, empty
 end

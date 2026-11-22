@@ -5,9 +5,9 @@ RUN mkdir -p src /app/lib && clojure -P && clojure -Spath | tr ':' '\n' | grep '
 COPY standard/src src
 
 FROM deps AS test
+ENV LANG=C.UTF-8
 COPY contracts /app/contracts
 COPY standard/test test
-RUN clojure -M:test
 CMD ["clojure","-M:test"]
 
 FROM eclipse-temurin:21-jre-alpine@sha256:5d7689f47d670aca766b9503a70bccc2d73b4eb9221ae8f714ae958313c4ce70 AS runtime

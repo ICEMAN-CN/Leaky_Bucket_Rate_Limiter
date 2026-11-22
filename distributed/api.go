@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type measurements struct {
@@ -31,6 +32,7 @@ func newAPI(store bucketStore, instance string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/check", a.check)
 	mux.HandleFunc("GET /v1/buckets/{user_id}", a.snapshot)
+	mux.HandleFunc("POST /v1/bucket-state", a.snapshot)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		send(w, http.StatusOK, map[string]string{"instance": instance, "status": "ok"})
 	})
@@ -64,15 +66,26 @@ func (a *api) failure(w http.ResponseWriter, status int, reason string) {
 	send(w, status, map[string]string{"instance": a.instance, "error": reason})
 }
 
+func userFromBody(w http.ResponseWriter, r *http.Request) string {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil || !utf8.Valid(body) {
+		return ""
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload) != 1 {
+		return ""
+	}
+	return payload["user_id"]
+}
+
 func (a *api) check(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	var payload map[string]string
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-	if err := decoder.Decode(&payload); err != nil || len(payload) != 1 || payload["user_id"] == "" || decoder.Decode(&struct{}{}) != io.EOF {
+	user := userFromBody(w, r)
+	if user == "" {
 		a.failure(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	allowed, b, err := a.store.check(r.Context(), payload["user_id"])
+	allowed, b, err := a.store.check(r.Context(), user)
 	if err != nil {
 		a.record(http.StatusServiceUnavailable, time.Since(start))
 		a.failure(w, http.StatusServiceUnavailable, "store_unavailable")
@@ -111,6 +124,9 @@ func (a *api) record(status int, duration time.Duration) {
 
 func (a *api) snapshot(w http.ResponseWriter, r *http.Request) {
 	user := r.PathValue("user_id")
+	if r.Method == http.MethodPost {
+		user = userFromBody(w, r)
+	}
 	if user == "" {
 		a.failure(w, http.StatusBadRequest, "invalid_request")
 		return
