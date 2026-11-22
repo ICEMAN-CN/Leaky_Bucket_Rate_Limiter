@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101e31" />
+    <title>限流操作台 · Bucket Lab</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#monitor">跳到运行监控</a>
+    <header class="top">
+      <div class="nav-wrap">
+        <a class="brand" href="#monitor" aria-label="Bucket Lab 首页"
+          ><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>Bucket Lab</a
+        >
+        <nav aria-label="页面导航">
+          <a href="#monitor" aria-current="location">运行监控</a>
+          <a href="#experiment">请求实验</a>
+          <a href="#scenarios">场景验证</a>
+        </nav>
+        <span class="live" id="live"><i class="dot"></i><span>连接采样服务中</span></span>
+      </div>
+    </header>
+    <main>
+      <section id="monitor" aria-labelledby="main-title">
+        <div class="heading">
+          <div>
+            <h1 id="main-title">限流操作台</h1>
+            <p>观察服务流量，验证每个用户的漏桶行为。</p>
+          </div>
+          <div class="filters">
+            <label
+              >监控目标<select id="watch-target">
+                <option value="all">所有服务</option>
+                <option value="clojure">Clojure 单机</option>
+                <option value="go">Go 集群</option>
+                <option value="go-a">Go A 实例</option>
+                <option value="go-b">Go B 实例</option>
+              </select></label
+            >
+            <label
+              >时间范围<select id="watch-range">
+                <option value="300">最近 5 分钟</option>
+                <option value="900">最近 15 分钟</option>
+                <option value="1800" selected>最近 30 分钟</option>
+              </select></label
+            >
+          </div>
+        </div>
+        <div class="stats" aria-label="流量指标">
+          <article>
+            <div class="metric-name"><i class="metric-icon ink"></i>请求速率</div>
+            <strong id="rps">—</strong><small>次 / 秒 · 最近采样</small>
+          </article>
+          <article>
+            <div class="metric-name"><i class="metric-icon blue"></i>放行请求</div>
+            <strong id="allowed">—</strong><small>次 · 所选时段</small>
+          </article>
+          <article>
+            <div class="metric-name"><i class="metric-icon orange"></i>限流拒绝</div>
+            <strong id="limited">—</strong><small id="limit-ratio">次 · 所选时段</small>
+          </article>
+          <article>
+            <div class="metric-name"><i class="metric-icon red"></i>系统错误</div>
+            <strong id="errors">—</strong><small>次 · 所选时段</small>
+          </article>
+          <article>
+            <div class="metric-name"><i class="metric-icon purple"></i>P95 耗时</div>
+            <strong id="latency">—</strong><small>毫秒 · 分桶上界</small>
+          </article>
+        </div>
+        <div class="monitor-grid">
+          <article class="panel traffic">
+            <div class="card-head">
+              <div>
+                <h2>请求趋势</h2>
+                <p id="chart-caption">各采样时段的请求速率</p>
+              </div>
+              <div class="legend">
+                <span><i class="blue"></i>放行</span><span><i class="orange"></i>限流</span
+                ><span><i class="red"></i>错误</span>
+              </div>
+            </div>
+            <div class="plot">
+              <canvas
+                id="chart"
+                role="img"
+                aria-label="放行、限流、错误的每秒请求趋势，详细数据见下方采样明细"
+              ></canvas>
+              <span id="chart-empty">等待首次有效采样</span>
+              <output id="chart-tip" hidden></output>
+            </div>
+            <details class="samples">
+              <summary>最近采样明细</summary>
+              <div class="table-scroll">
+                <table aria-label="最近采样明细">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>放行</th>
+                      <th>限流</th>
+                      <th>错误</th>
+                      <th>P95 / ms</th>
+                      <th>采样</th>
+                    </tr>
+                  </thead>
+                  <tbody id="samples"></tbody>
+                </table>
+              </div>
+            </details>
+          </article>
+          <article class="panel health">
+            <div class="card-head">
+              <div>
+                <h2>实例健康</h2>
+                <p>服务可达性与就绪状态</p>
+              </div>
+              <span id="online" class="pill">—</span>
+            </div>
+            <ul id="instances" aria-label="实例列表">
+              <li class="placeholder">等待采样</li>
+            </ul>
+            <div class="health-foot"><span>最近采样</span><time id="last-sample">—</time></div>
+          </article>
+        </div>
+        <p class="note" id="data-note" role="status"></p>
+      </section>
+      <section id="experiment" aria-labelledby="exp-title">
+        <div class="section-title">
+          <div>
+            <h2 id="exp-title">请求实验</h2>
+            <p>选定用户和服务后发送真实请求，观察准入结果与水位。</p>
+          </div>
+        </div>
+        <div class="lab-grid">
+          <form class="panel request" id="request-form">
+            <h3>发送请求</h3>
+            <div class="form-grid">
+              <label
+                >请求目标<select id="target">
+                  <option value="clojure">Clojure 单机</option>
+                  <option value="cluster">Go 集群 · 负载均衡</option>
+                  <option value="go-a">Go A 实例</option>
+                  <option value="go-b">Go B 实例</option>
+                </select></label
+              >
+              <label>用户 ID<input id="user-id" required autocomplete="off" spellcheck="false" /></label>
+            </div>
+            <div class="actions">
+              <button class="primary" type="submit">发送一次</button
+              ><button type="button" id="burst">突发 6 次</button
+              ><button type="button" id="read">查询水位</button>
+            </div>
+            <p class="feedback" id="request-feedback" role="status">等待操作</p>
+          </form>
+          <article class="panel bucket">
+            <div class="card-head">
+              <div>
+                <h3>桶状态</h3>
+                <p>所选用户的最近结算快照</p>
+              </div>
+            </div>
+            <div class="bucket-number"><strong id="level">—</strong><span id="capacity"></span></div>
+            <div
+              class="gauge"
+              id="gauge"
+              role="meter"
+              aria-label="已占用桶容量"
+              aria-valuemin="0"
+              aria-valuemax="1"
+              aria-valuenow="0"
+              aria-valuetext="暂无快照"
+            >
+              <span></span>
+            </div>
+            <div class="bucket-meta">
+              <span>漏速 <b id="leak">—</b></span
+              ><span>结算 <b id="as-of">—</b></span>
+            </div>
+          </article>
+        </div>
+      </section>
+      <section id="scenarios" aria-labelledby="scenario-title">
+        <div class="section-title">
+          <div>
+            <h2 id="scenario-title">场景验证</h2>
+            <p>每次运行使用独立演示用户，按真实响应核对预期结果。</p>
+          </div>
+        </div>
+        <div class="scenario-grid">
+          <article class="panel scenario">
+            <h3>漏水恢复</h3>
+            <p>将同一用户的桶打满，等待额度恢复后再次请求。</p>
+            <button data-scenario="recovery">验证漏水恢复</button>
+          </article>
+          <article class="panel scenario">
+            <h3>用户隔离</h3>
+            <p>耗尽用户 A 的额度，检查用户 B 的第一次请求。</p>
+            <button data-scenario="isolation">验证用户隔离</button>
+          </article>
+          <article class="panel scenario">
+            <h3>跨实例共享</h3>
+            <p>同一用户交替访问 Go A 与 Go B，共用一份额度。</p>
+            <button data-scenario="shared">验证跨实例共享</button>
+          </article>
+        </div>
+        <div id="scenario-result" class="verdict" role="status" hidden></div>
+      </section>
+      <section class="panel ledger" aria-labelledby="log-title">
+        <div class="card-head">
+          <div>
+            <h2 id="log-title">请求记录</h2>
+            <p>本页最近 100 条操作，最新批次显示在顶部。</p>
+          </div>
+          <button id="clear" class="subtle" disabled>清空记录</button>
+        </div>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="可滚动的请求记录">
+          <table aria-label="请求记录">
+            <thead>
+              <tr>
+                <th>操作</th>
+                <th>用户 ID</th>
+                <th>目标 / 实例</th>
+                <th>HTTP</th>
+                <th>结果</th>
+                <th>水位</th>
+                <th>耗时 / ms</th>
+              </tr>
+            </thead>
+            <tbody id="records"></tbody>
+          </table>
+        </div>
+        <div id="empty-log" class="empty-log">还没有请求记录</div>
+      </section>
+    </main>
+  </body>
+</html>

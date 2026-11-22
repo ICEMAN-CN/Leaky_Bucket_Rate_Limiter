@@ -1,0 +1,29 @@
+services:
+  standard-tests:
+    build:
+      context: .
+      dockerfile: standard/Dockerfile
+      target: test
+  go-tests:
+    build:
+      context: .
+      dockerfile: distributed/Dockerfile
+      target: test
+    environment:
+      REDIS_TEST_ADDR: redis:6379
+  console-tests:
+    build:
+      context: .
+      dockerfile: console/Dockerfile
+      target: test
+  browser-tests:
+    build:
+      context: .
+      dockerfile: tests/browser/Dockerfile
+    environment:
+      BASE_URL: http://console:8080
+    shm_size: 256mb
+  checks:
+    image: python:3.13.9-alpine
+    volumes: ["./scripts/verify.py:/verify.py:ro"]
+    entrypoint: ["python", "/verify.py"]
