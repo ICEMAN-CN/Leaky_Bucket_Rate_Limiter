@@ -1,10 +1,10 @@
 # Leaky Bucket Rate Limiter
 
-A small REST service that decides whether a user can make one more request now. The Clojure implementation is the standalone answer to the programming exercise. A separate Go implementation demonstrates how to preserve a user's quota across two application instances. Both run against the same set of time-based examples.
+A small REST service that decides whether a user can make one more request. The standalone Clojure service keeps each user's bucket in memory. The Go and Redis implementation shares each user's quota across two application instances. Both implementations run the same time-based test cases.
 
-[Clojure walkthrough and interview demo](docs/interview.md)
+[Clojure walkthrough and live demo](docs/interview.md)
 
-## Run the assignment
+## Run the standalone service
 
 Run the following commands from the repository root. You need Make, a running Docker engine and the Docker Compose plugin with support for `up --wait`.
 
@@ -39,7 +39,7 @@ One limiter owns a map of independent user buckets. Each request costs one unit.
 | 0.5 | Another request | 429; level 4.5 |
 | 1 | Another request | 200; level 5 |
 
-A new user can still spend their full quota at any point in this example. The calculation runs on demand, so there is no background timer or request queue. The [Clojure core](standard/src/limiter/core.clj) exposes the three functions from the exercise. `allow-request` takes a Unix timestamp and returns the decision and a new immutable limiter. Only the [HTTP adapter](standard/src/limiter/http.clj) reads the clock and commits the new state. A short critical section serializes competing Jetty requests.
+A new user can still spend their full quota at any point in this example. The calculation runs on demand, so there is no background timer or request queue. The [Clojure core](standard/src/limiter/core.clj) exposes `create-rate-limiter`, `allow-request`, and `get-bucket-state`. `allow-request` takes a Unix timestamp and returns the decision and a new immutable limiter. Only the [HTTP adapter](standard/src/limiter/http.clj) reads the clock and commits the new state. A short critical section serializes competing Jetty requests.
 
 ## HTTP contract
 
@@ -78,6 +78,8 @@ Open the [local console](http://127.0.0.1:8080/) or send requests directly to th
 **Changing the policy.** Redis records the capacity and leak rate with each bucket. A busy bucket keeps its original settings across a rolling update. Once it drains, its next request adopts the settings of the instance handling that request. A continuously busy user can therefore stay on the previous policy. The snapshot reports the policy actually used. New buckets may receive either policy while a mixed rollout is in progress.
 
 If upgrading an existing volume from the original untagged bucket format, deploy the new code to **both** Go instances with the existing settings first. Before changing them, allow one full bucket drain time (`capacity / leak_rate` seconds plus 1 ms) after the last old process stops. Accessed buckets acquire their original policy, and unaccessed buckets expire. A legacy bucket without a finite Redis TTL needs an explicit migration.
+
+Redis keys for this version use the `leakybucket:limiter:v1:` prefix. When switching from a different prefix, stop writes to the old namespace and wait for its buckets to drain, or migrate the keys with their expiry times before starting both replicas on the new prefix.
 
 Capacity and leak rate default to `CAPACITY=5` and `LEAK_RATE=1.0`. Host port overrides are `STANDARD_PORT`, `GO_PORT` and `CONSOLE_PORT`. Run `make up` after changing settings. For a remote demo, run `make deploy` on the Linux host and open an SSH tunnel, for example `ssh -L 8080:127.0.0.1:8080 user@host`.
 

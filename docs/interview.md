@@ -41,7 +41,7 @@ Continue in the same REPL. This example uses a capacity of one to make the bound
 
 The pure function computes a result from the previous state and the given time. The HTTP layer controls which request gets to commit that result when multiple requests arrive together. Unit tests can pass in exact times and check the resulting level immediately.
 
-**Why does the HTTP adapter lock an `atom`?** With one slot left, two Jetty threads could read the same old state and each decide to allow its request. Each `reset!` is atomic on its own, but the two read, decide, and write sequences could still interleave. `admit!` runs the entire sequence in one short critical section and returns the decision that matches the committed state. This serialises updates across users in one process, matching the exercise's single-threaded assumption. If this section becomes a bottleneck, measure lock wait time before deciding whether to partition by user.
+**Why does the HTTP adapter lock an `atom`?** With one slot left, two Jetty threads could read the same old state and each decide to allow its request. Each `reset!` is atomic on its own, but the two read, decide, and write sequences could still interleave. `admit!` runs the entire sequence in one short critical section and returns the decision that matches the committed state. The process serialises updates across users. If this section becomes a bottleneck, measure lock wait time before deciding whether to partition by user.
 
 ## Request paths
 
@@ -71,13 +71,13 @@ The console can also send requests directly to Go A and Go B. Other clients can 
 3. In **Monitoring**, select **Go cluster**. Send requests to port 8082 from a second terminal. The console will include that traffic in the deltas between samples. Allowed and rate-limited responses both represent completed decisions. When Redis is unavailable, the service returns `503`. The isolated test suite stops a real Redis instance and checks how the console reports service errors.
 4. To explain how you checked correctness, open the [shared cases](../contracts/cases.json) and trace 0.5, 0.75, and 1 second. Then show how `make test` verifies cross-replica concurrency and outage recovery.
 
-## Interview questions
+## Design questions
 
 **Why calculate leakage on demand?** Requests can arrive 0.1 seconds apart. Calculating leakage from elapsed time handles fractional seconds and only does work for users who make requests. A GET returns the last settled level and time, which show the state that resulted from the previous decision.
 
 **Why does round-robin routing alone fail to enforce one quota per user?** If both replicas keep local buckets, the same user can spend a full quota on each. With sticky routing, losing or moving a replica can still change where the user's state lives. Redis keeps each user's state and atomic transition together. This adds a network round trip and a dependency on shared storage.
 
-**Why return `503` when Redis goes down?** This implementation prioritises quota enforcement and tells the caller the admission outcome could not be confirmed. A read-heavy endpoint such as job search could fall back to local buckets to stay available, accepting that replicas may allow extra requests during an outage. If many different users can saturate the search backend together, also consider an overall concurrency cap.
+**Why return `503` when Redis goes down?** This implementation prioritises quota enforcement and tells the caller the admission outcome could not be confirmed. A read-heavy search endpoint could fall back to local buckets to stay available, accepting that replicas may allow extra requests during an outage. If many different users can saturate the search backend together, also consider an overall concurrency cap.
 
 **What availability and delivery guarantees can you claim?** Go B takes over after Go A stops. The current stack still depends on a single host, a single Redis server, and asynchronous persistence. A network timeout can occur after Redis applies a write, so retrying the same business request can use another slot. To provide end-to-end idempotency, define a request identifier and a deduplication window.
 
