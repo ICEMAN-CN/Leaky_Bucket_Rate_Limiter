@@ -2,8 +2,6 @@
 
 A small REST service that decides whether a user can make one more request. The standalone Clojure service keeps each user's bucket in memory. The Go and Redis implementation shares each user's quota across two application instances. Both implementations run the same time-based test cases.
 
-[Clojure walkthrough and live demo](docs/interview.md)
-
 ## Run the standalone service
 
 Run the following commands from the repository root. You need Make, a running Docker engine and the Docker Compose plugin with support for `up --wait`.
