@@ -9,7 +9,7 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL: process.env.BASE_URL || "http://127.0.0.1:8080",
-    locale: "zh-CN",
+    locale: "en-HK",
     reducedMotion: "reduce",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

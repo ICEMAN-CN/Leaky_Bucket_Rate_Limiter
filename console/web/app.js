@@ -1,23 +1,24 @@
 "use strict";
 
 const byId = (id) => document.getElementById(id);
-const targets = { clojure: "Clojure 单机", cluster: "Go 集群", "go-a": "Go A", "go-b": "Go B" };
-const scenarioTitles = { recovery: "漏水恢复", isolation: "用户隔离", shared: "跨实例共享" };
+const targets = { clojure: "Clojure standalone", cluster: "Go cluster", "go-a": "Go A", "go-b": "Go B" };
+const scenarioTitles = { recovery: "Quota recovery", isolation: "User isolation", shared: "Shared quota" };
 const colors = { allowed: "#174eb8", limited: "#af550c", errors: "#b3304c" };
 const historyState = { points: [], instances: [], interval_seconds: 2 };
-const clock = new Intl.DateTimeFormat("zh-CN", {
+const clock = new Intl.DateTimeFormat("en-HK", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
   hourCycle: "h23",
 });
-const compactClock = new Intl.DateTimeFormat("zh-CN", {
+const compactClock = new Intl.DateTimeFormat("en-HK", {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
 });
-const numbers = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
+const numbers = new Intl.NumberFormat("en-HK", { maximumFractionDigits: 2 });
 const logRows = [];
+let logSeq = 0;
 let sampleError = "";
 let pollController;
 let pollTimer;
@@ -81,8 +82,8 @@ function drawChart() {
     : 0;
   const range = coverage ? Math.min(selectedRange, Math.max(30, coverage)) : selectedRange;
   byId("chart-caption").textContent = coverage
-    ? "每秒请求量 · 观测跨度 " + (coverage < 120 ? format(coverage) + " 秒" : format(coverage / 60) + " 分钟")
-    : "各采样时段的请求速率";
+    ? "Requests per second · " + (coverage < 120 ? format(coverage) + " s" : format(coverage / 60) + " min") + " observed"
+    : "Request rate by sample interval";
   const start = displayEnd - range;
   const interval = historyState.interval_seconds;
   const x = (epoch) => left + ((right - left) * (epoch - start)) / range;
@@ -102,7 +103,7 @@ function drawChart() {
   const y = (value) => bottom - ((bottom - top) * value) / ceiling;
   ctx.font = "10px ui-monospace, monospace";
   ctx.fillStyle = "#536778";
-  ctx.fillText("次 / 秒", 1, 10);
+  ctx.fillText("req/s", 1, 10);
   ctx.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const value = (ceiling * i) / 4;
@@ -120,7 +121,7 @@ function drawChart() {
     ctx.textAlign = i === 0 ? "left" : i === ticks ? "right" : "center";
     ctx.fillText(formatTime(epoch, range < 300 ? clock : compactClock), x(epoch), height - 4);
   }
-  // 未知值与丢失的采样窗口必须断开，不跨缺口补画流量。
+  // Leave gaps where values are unknown or sample intervals are missing.
   for (const key of [...series].reverse()) {
     const dots = [];
     const partialDots = [];
@@ -136,7 +137,7 @@ function drawChart() {
       const px = x(point.at),
         py = y(requestRate(point, key));
       if (point.partial) {
-        // 可见实例变少时，聚合值可能下降。用单独的空心点区分部分流量。
+        // Fewer sampled instances can lower the total. Mark partial traffic with a separate hollow point.
         partialDots.push([px, py]);
         previous = undefined;
         continue;
@@ -168,7 +169,7 @@ function renderSamples() {
   for (const point of selectedPoints.slice(-20).reverse()) {
     const row = document.createElement("tr");
     const hasSample = Number.isFinite(point.allowed);
-    const quality = !hasSample ? "缺失" : point.partial ? "部分" : "完整";
+    const quality = !hasSample ? "Missing" : point.partial ? "Partial" : "Complete";
     for (const value of [
       formatTime(point.at),
       format(point.allowed),
@@ -190,23 +191,23 @@ function renderHealth() {
   for (const entry of instances) {
     const li = document.createElement("li");
     const dot = document.createElement("i");
-    let state = "等待采样";
+    let state = "Waiting for samples";
     if (entry.at > 0 && entry.up === true) {
-      state = entry.ready === true ? "就绪" : entry.ready === false ? "未就绪" : "就绪状态未知";
+      state = entry.ready === true ? "Ready" : entry.ready === false ? "Not ready" : "Readiness unknown";
       dot.className = "instance-dot " + (entry.ready === true ? "ok" : "warn");
     } else if (entry.at > 0 && entry.ready === true) {
-      state = "就绪 · 指标缺失";
+      state = "Ready · Metrics missing";
       dot.className = "instance-dot warn";
     } else {
       dot.className = "instance-dot " + (entry.at > 0 && entry.up === false ? "bad" : "");
-      if (entry.at > 0 && entry.up === false) state = "探测失败";
+      if (entry.at > 0 && entry.up === false) state = "Health check failed";
     }
     li.append(dot, cell("strong", targets[entry.id] || entry.id), cell("span", state));
     list.append(li);
   }
-  if (!instances.length) list.append(cell("li", "等待采样", "placeholder"));
+  if (!instances.length) list.append(cell("li", "Waiting for samples", "placeholder"));
   const ready = instances.filter((entry) => entry.ready).length;
-  byId("online").textContent = instances.length ? ready + " / " + instances.length + " 就绪" : "—";
+  byId("online").textContent = instances.length ? ready + " / " + instances.length + " ready" : "—";
   const last = Math.max(
     ...historyState.points.map((point) => point.at),
     ...instances.map((entry) => entry.at),
@@ -221,8 +222,8 @@ function renderHistory() {
   selectedPoints = points.filter((point) => point.at > start && point.at <= displayEnd);
   const latest = selectedPoints.at(-1);
   const currentPartial = latest?.partial && Number.isFinite(latest.rps);
-  byId("rps-detail").textContent = currentPartial ? "次 / 秒 · 部分实例" : "次 / 秒 · 最近采样";
-  byId("p95-detail").textContent = currentPartial ? "毫秒 · 部分实例上界" : "毫秒 · 分桶上界";
+  byId("rps-detail").textContent = currentPartial ? "req/s · Partial" : "req/s · Latest sample";
+  byId("p95-detail").textContent = currentPartial ? "ms · Partial upper bound" : "ms · Bucket upper bound";
   byId("rps").textContent = format(latest?.rps);
   byId("latency").textContent = latency(latest?.p95_ms);
   for (const key of ["allowed", "limited", "errors"]) {
@@ -232,10 +233,10 @@ function renderHistory() {
   const decisions = selectedPoints.reduce((sum, p) => sum + (p.allowed || 0) + (p.limited || 0), 0);
   const rejected = selectedPoints.reduce((sum, p) => sum + (p.limited || 0), 0);
   byId("limit-ratio").textContent = decisions
-    ? "次 · 拒绝率 " + format((100 * rejected) / decisions) + "%"
-    : "次 · 所选时段";
+    ? format((100 * rejected) / decisions) + "% rate limited"
+    : "Selected time range";
   const partial = selectedPoints.some((point) => point.partial || !Number.isFinite(point.allowed));
-  const note = partial ? "所选时段含缺失采样，统计仅包含已采集的请求。空心点表示部分实例的流量。" : "";
+  const note = partial ? "The selected range has sampling gaps. Totals include only sampled requests. Hollow points show partial coverage." : "";
   byId("data-note").textContent = [sampleError, note].filter(Boolean).join(" ");
   renderHealth();
   renderSamples();
@@ -253,18 +254,18 @@ async function poll() {
       signal: controller.signal,
       cache: "no-store",
     });
-    if (!response.ok) throw Error("采样服务返回 HTTP " + response.status);
+    if (!response.ok) throw Error("Sampler returned HTTP " + response.status);
     const data = await response.json();
     if (controller !== pollController) return;
     historyState.points = data.points || [];
     historyState.instances = data.instances || [];
     historyState.interval_seconds = data.interval_seconds || 2;
     sampleError = "";
-    setLive("每 " + historyState.interval_seconds + " 秒采样", "ok");
+    setLive("Sampling every " + historyState.interval_seconds + " s", "ok");
   } catch (error) {
     if (controller !== pollController) return;
-    sampleError = "采样服务暂不可用，当前显示最近可用数据。";
-    setLive("采样连接中断", "bad");
+    sampleError = "The sampler is unavailable. Showing the last available data.";
+    setLive("Sampling disconnected", "bad");
   } finally {
     clearTimeout(timeout);
     if (controller === pollController) {
@@ -278,8 +279,8 @@ function renderBucket(bucket) {
   const gauge = byId("gauge");
   byId("level").textContent = format(bucket?.level);
   byId("capacity").textContent = bucket ? "/ " + format(bucket.capacity) : "";
-  byId("leak").textContent = bucket ? format(bucket.leak_rate) + " / 秒" : "—";
-  byId("as-of").textContent = formatTime(bucket?.as_of);
+  byId("leak").textContent = bucket ? format(bucket.leak_rate) + " units/s" : "—";
+  byId("updated-at").textContent = formatTime(bucket?.updated_at);
   const level = bucket?.level || 0;
   const capacity = bucket?.capacity || 1;
   gauge.firstElementChild.style.width = Math.max(0, Math.min(100, (100 * level) / capacity)) + "%";
@@ -287,18 +288,24 @@ function renderBucket(bucket) {
   gauge.setAttribute("aria-valuenow", level);
   gauge.setAttribute(
     "aria-valuetext",
-    bucket ? "已占 " + format(level) + "，容量 " + format(capacity) : "暂无快照",
+    bucket ? format(level) + " of " + format(capacity) + " units used" : "No snapshot yet",
   );
 }
 
 function describeRow(row) {
-  if (row.status === 429) return ["限流", "limited"];
-  if (row.status === 404 && row.error === "bucket_not_found") return ["无桶记录", "neutral"];
-  if (!(row.status >= 200 && row.status < 300)) return ["失败", "fail"];
-  if (row.allowed === true) return ["放行", ""];
-  if (row.allowed === false) return ["限流", "limited"];
-  if (Number.isFinite(row.level) && (row.title === "查询" || row.operation === "GET")) return ["已查询", "neutral"];
-  return ["失败", "fail"];
+  if (row.status === 429) return ["Rate limited", "limited"];
+  if (row.status === 404 && row.error === "bucket_not_found") return ["No bucket", "neutral"];
+  if (!(row.status >= 200 && row.status < 300)) return ["Failed", "fail"];
+  if (row.allowed === true) return ["Allowed", ""];
+  if (row.allowed === false) return ["Rate limited", "limited"];
+  if (Number.isFinite(row.level) && (row.title === "Lookup" || row.operation === "GET")) return ["Read", "neutral"];
+  return ["Failed", "fail"];
+}
+
+function formatLogTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : clock.format(date);
 }
 
 function renderRecords() {
@@ -311,6 +318,7 @@ function renderRecords() {
     const destination = (targets[event.target] || event.target || "—") + " / " + instance;
     const user = cell("td", event.user_id, "record-user");
     user.title = event.user_id;
+    tr.append(cell("td", String(event.seq)), cell("td", formatLogTime(event.sent_at)));
     tr.append(cell("td", event.title), user, cell("td", destination), cell("td", event.status || "—"));
     const outcome = document.createElement("td");
     outcome.append(cell("span", label, "badge " + style));
@@ -322,7 +330,8 @@ function renderRecords() {
 }
 
 function appendRows(rows) {
-  logRows.unshift(...rows);
+  // Both manual batches and scenario results arrive in request dispatch order.
+  logRows.unshift(...rows.map((row) => ({ ...row, seq: ++logSeq })).reverse());
   if (logRows.length > 100) logRows.length = 100;
   renderRecords();
 }
@@ -340,7 +349,7 @@ async function callTarget(target, user, kind) {
   const start = performance.now();
   const request = kind !== "read";
   const path = "/api/targets/" + target + "/v1/" + (request ? "check" : "bucket-state");
-  const result = { target, user_id: user, title: request ? "请求" : "查询", status: null };
+  const result = { target, user_id: user, title: request ? "Request" : "Lookup", status: null, sent_at: Date.now() };
   try {
     const response = await fetch(path, {
       method: "POST",
@@ -357,7 +366,7 @@ async function callTarget(target, user, kind) {
     result.level = data.bucket?.level;
     result.error = data.error;
   } catch {
-    result.error = "请求超时或服务未返回有效响应";
+    result.error = "The request timed out or the service returned an invalid response";
   }
   result.elapsed_ms = performance.now() - start;
   return result;
@@ -369,22 +378,22 @@ async function manual(kind) {
   const target = byId("target").value;
   const count = kind === "burst" ? 6 : 1;
   setBusy(true);
-  setFeedback("正在请求 " + (targets[target] || target) + "…");
+  setFeedback("Contacting " + (targets[target] || target) + "…");
   try {
     const rows = await Promise.all(Array.from({ length: count }, () => callTarget(target, user, kind)));
     appendRows(rows);
     const snapshots = rows
       .filter((row) => row.bucket)
-      .sort((a, b) => a.bucket.as_of - b.bucket.as_of || a.level - b.level);
+      .sort((a, b) => a.bucket.updated_at - b.bucket.updated_at || a.level - b.level);
     if (snapshots.length) renderBucket(snapshots.at(-1).bucket);
     else renderBucket(null);
     if (kind === "read") {
       const row = rows[0];
-      if (row.status === 404 && row.error === "bucket_not_found") setFeedback("该用户还没有可查询的桶。");
-      else if (row.status === 200 && row.bucket) setFeedback("已读取最近结算的桶快照。");
+      if (row.status === 404 && row.error === "bucket_not_found") setFeedback("This user has no bucket yet.");
+      else if (row.status === 200 && row.bucket) setFeedback("Read the last settled bucket snapshot.");
       else
         setFeedback(
-          row.status ? "查询失败（HTTP " + row.status + "）。" : "查询失败，未收到有效响应。",
+          row.status ? "Lookup failed (HTTP " + row.status + ")." : "Lookup failed. No valid response was received.",
           true,
         );
     } else {
@@ -392,8 +401,8 @@ async function manual(kind) {
       const limited = rows.filter((row) => row.status === 429 || row.allowed === false).length;
       const failures = count - passed - limited;
       const unavailable = rows.some((row) => row.status === 503);
-      const summary = "放行 " + passed + " 次，限流 " + limited + " 次，失败 " + failures + " 次。";
-      setFeedback(summary + (unavailable ? " 限流服务暂不可用（HTTP 503）。" : ""), failures > 0);
+      const summary = passed + " allowed, " + limited + " rate limited, " + failures + " failed.";
+      setFeedback(summary + (unavailable ? " Rate limiter unavailable (HTTP 503)." : ""), failures > 0);
     }
   } finally {
     setBusy(false);
@@ -406,7 +415,7 @@ async function runScenario(name) {
   const result = byId("scenario-result");
   result.hidden = false;
   result.classList.remove("bad");
-  result.textContent = "正在验证" + scenarioTitles[name] + "…";
+  result.textContent = "Running: " + scenarioTitles[name] + "…";
   setBusy(true);
   try {
     const response = await fetch("/api/scenarios/" + name + "?target=" + target, {
@@ -417,11 +426,11 @@ async function runScenario(name) {
     const data = await response.json();
     if (!Array.isArray(data.rows)) throw Error(data.error || "HTTP " + response.status);
     appendRows(
-      data.rows.map((row) => ({ ...row, title: scenarioTitles[name] + " · " + (row.operation || "请求") })),
+      data.rows.map((row) => ({ ...row, title: scenarioTitles[name] + " · " + (row.operation || "Request") })),
     );
     result.classList.toggle("bad", !data.passed);
     result.textContent = [
-      scenarioTitles[name] + (data.passed ? " · 验证通过" : " · 验证未通过"),
+      scenarioTitles[name] + (data.passed ? " · Passed" : " · Failed"),
       data.expected,
       data.summary,
     ]
@@ -429,7 +438,7 @@ async function runScenario(name) {
       .join("\n");
   } catch (error) {
     result.classList.add("bad");
-    result.textContent = scenarioTitles[name] + " · 场景执行失败。" + error.message;
+    result.textContent = scenarioTitles[name] + " · Scenario failed. " + error.message;
   } finally {
     setBusy(false);
   }
@@ -456,7 +465,7 @@ for (const [id, event] of [
 ]) {
   byId(id).addEventListener(event, () => {
     renderBucket(null);
-    setFeedback("等待操作");
+    setFeedback("Ready to send requests");
   });
 }
 for (const button of document.querySelectorAll("[data-scenario]")) {
@@ -464,6 +473,7 @@ for (const button of document.querySelectorAll("[data-scenario]")) {
 }
 byId("clear").addEventListener("click", () => {
   logRows.length = 0;
+  logSeq = 0;
   renderRecords();
 });
 byId("chart").addEventListener("pointermove", (event) => {
@@ -478,13 +488,13 @@ byId("chart").addEventListener("pointermove", (event) => {
   }
   tip.textContent =
     formatTime(nearest.at) +
-    " · 放行 " +
+    " · Allowed " +
     format(nearest.allowed) +
-    " / 限流 " +
+    " / Rate limited " +
     format(nearest.limited) +
-    " / 错误 " +
+    " / Errors " +
     format(nearest.errors) +
-    (nearest.partial ? " 次 · 部分采样" : " 次");
+    (nearest.partial ? " · Partial sample" : "");
   tip.hidden = false;
 });
 byId("chart").addEventListener("pointerleave", () => {

@@ -6,7 +6,7 @@
            [org.eclipse.jetty.server HttpConnectionFactory Server]))
 
 (defn- configure-paths! [^Server server]
-  ;; 路由匹配原始路径后只解码一次，用户 ID 可包含编码后的斜杠和百分号。
+  ;; Match the raw path and decode it once so user IDs can contain encoded slashes and percent signs.
   (doseq [connector (.getConnectors server)]
     (let [factory (.getConnectionFactory connector HttpConnectionFactory)]
       (.setUriCompliance (.getHttpConfiguration factory)

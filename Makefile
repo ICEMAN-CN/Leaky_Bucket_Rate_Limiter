@@ -5,11 +5,11 @@ COMPOSE := docker compose
 .PHONY: help standard up deploy demo test test-standard down status
 
 help:
-	@echo "standard  Clojure 答卷      up      完整操作台"
-	@echo "demo      运行真实场景      test    全套隔离测试"
-	@echo "test-standard             仅测试 Clojure 标准答卷"
-	@echo "deploy    当前主机部署      down    停止并保留卷"
-	@echo "status    查看服务状态"
+	@echo "standard       Start the Clojure service     up      Start the full demo"
+	@echo "demo           Run live scenarios            test    Run the isolated test suite"
+	@echo "test-standard  Test the Clojure implementation"
+	@echo "deploy         Deploy to this host           down    Stop services and retain volumes"
+	@echo "status         Show service status"
 
 standard:
 	$(COMPOSE) up -d --build --wait clojure
@@ -17,9 +17,9 @@ standard:
 
 up deploy:
 	$(COMPOSE) up -d --build --wait
-	@echo "操作台 http://$$(docker compose port console 8080)/"
-	@echo "标准版 http://$$(docker compose port clojure 8080)/v1/check"
-	@echo "Go 集群 http://$$(docker compose port gateway 8080)/v1/check"
+	@echo "Console http://$$(docker compose port console 8080)/"
+	@echo "Clojure API http://$$(docker compose port clojure 8080)/v1/check"
+	@echo "Go cluster API http://$$(docker compose port gateway 8080)/v1/check"
 
 demo:
 	$(COMPOSE) exec -T console console demo

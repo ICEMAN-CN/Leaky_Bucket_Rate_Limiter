@@ -37,7 +37,7 @@
       (catch IOException _ nil))))
 
 (defn- decode-id [raw-id]
-  ;; URLDecoder 按表单规则解释加号。路径中的字面加号属于用户 ID。
+  ;; URLDecoder treats plus signs as spaces. Preserve literal plus signs in path IDs.
   (URLDecoder/decode (str/replace raw-id "+" "%2B") StandardCharsets/UTF_8))
 
 (defn- snapshot [state instance user-id]
@@ -46,7 +46,7 @@
     (error-response instance 404 "bucket_not_found")))
 
 (defn- admit! [state user-id now]
-  ;; 将一次纯函数判定与提交放在同一临界区，避免 Jetty 的线程争用最后一个名额。
+  ;; Keep the decision and commit under one lock so two Jetty threads cannot claim the last slot.
   (locking state
     (let [[allowed? next-state] (core/allow-request @state user-id (now))]
       (reset! state next-state)
@@ -69,12 +69,12 @@
                     {:allowed allowed? :instance instance :bucket bucket}))
         (catch Exception e
           (record-check! metrics :errors started-ns)
-          (binding [*out* *err*] (println "限流判定失败" (.getMessage e)))
+          (binding [*out* *err*] (println "Rate limit check failed" (.getMessage e)))
           (error-response instance 503 "limiter_unavailable")))
       (error-response instance 400 "invalid_request"))))
 
 (defn handler
-  "每个服务实例创建一次。生产时钟与测试时钟使用相同接口，均返回 Unix 秒。"
+  "Creates one handler per service instance. Both production and test clocks return Unix seconds."
   [limiter instance now]
   (let [state (atom limiter)
         metrics (atom {:instance instance :started_at (str (UUID/randomUUID))

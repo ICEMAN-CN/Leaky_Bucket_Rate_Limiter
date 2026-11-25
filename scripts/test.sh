@@ -21,7 +21,7 @@ browser() {
         destination="test-results/$project-$label"
         mkdir -p "$destination"
         docker cp "$container:/suite/test-results/." "$destination/" || :
-        echo "浏览器测试失败，诊断文件目录 $destination" >&2
+        echo "Browser tests failed. Diagnostics: $destination" >&2
         return 1
     fi
 }
@@ -36,7 +36,7 @@ dc run --rm --no-deps console-tests
 dc up --wait -d --build clojure go-a go-b gateway console
 dc run --rm --no-deps checks api
 browser normal
-# 较慢漏速让故障演练能观察故障前同一个桶的状态。
+# A slower leak rate keeps the same bucket available across the outage test.
 export LEAK_RATE=0.01
 dc up --wait -d go-a go-b
 dc run --rm --no-deps checks seed
@@ -49,4 +49,4 @@ dc start redis go-a
 dc run --rm --no-deps checks restored
 dc stop -t 1 go-a go-b
 dc run --rm --no-deps checks gateway_outage
-echo '全部验收通过。'
+echo 'All acceptance checks passed.'

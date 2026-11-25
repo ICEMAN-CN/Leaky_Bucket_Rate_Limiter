@@ -19,14 +19,15 @@ type snapshot struct {
 	Rate     float64 `json:"leak_rate"`
 }
 type row struct {
-	User      string   `json:"user_id"`
-	Target    string   `json:"target"`
-	Instance  string   `json:"instance"`
-	Status    int      `json:"status"`
-	MS        float64  `json:"elapsed_ms"`
-	Level     *float64 `json:"level"`
-	Allowed   *bool    `json:"allowed"`
-	Operation string   `json:"operation"`
+	User      string    `json:"user_id"`
+	Target    string    `json:"target"`
+	Instance  string    `json:"instance"`
+	SentAt    time.Time `json:"sent_at"`
+	Status    int       `json:"status"`
+	MS        float64   `json:"elapsed_ms"`
+	Level     *float64  `json:"level"`
+	Allowed   *bool     `json:"allowed"`
+	Operation string    `json:"operation"`
 }
 type scenario struct {
 	Name     string `json:"name"`
@@ -36,7 +37,7 @@ type scenario struct {
 	Rows     []row  `json:"rows"`
 }
 
-// 状态码、判定和水位需要同时成立，场景才能算作与预期一致。
+// A scenario passes only when the status code, decision and bucket level all match.
 func (r row) matchesDecision(allowed bool) bool {
 	status := http.StatusTooManyRequests
 	if allowed {
@@ -53,7 +54,7 @@ func (a *app) step(ctx context.Context, target, user string, lookup bool) (row, 
 		body = nil
 	}
 	start := time.Now()
-	out := row{User: user, Target: target, Instance: target, Operation: method, Status: 503}
+	out := row{User: user, Target: target, Instance: target, Operation: method, Status: 503, SentAt: start}
 	req, err := http.NewRequestWithContext(ctx, method, a.targets[target]+path, bytes.NewReader(body))
 	if err != nil {
 		return out, nil
@@ -83,18 +84,18 @@ func (a *app) step(ctx context.Context, target, user string, lookup bool) (row, 
 }
 
 var expectations = map[string]string{
-	"shared":    "同一用户在 Go A 写入、Go B 可读；交替请求合计只放行一个桶的容量。",
-	"isolation": "装满第一个用户的桶后，第二个用户的首次请求仍能放行。",
-	"recovery":  "装满后下一次请求被拒；等待恢复一份额度，再次请求放行。",
+	"shared":    "Go A updates the bucket and Go B can read it. Alternating requests share the capacity of one bucket.",
+	"isolation": "After the first user's bucket fills, the second user's first request still passes.",
+	"recovery":  "The next request is rate-limited once the bucket is full. After one unit leaks, a new request passes.",
 }
 
 func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 	id := make([]byte, 8)
 	if _, err := rand.Read(id); err != nil {
-		return scenario{Name: name, Summary: "演示用户创建失败"}
+		return scenario{Name: name, Summary: "Could not create a demo user."}
 	}
 	user := "demo-" + hex.EncodeToString(id)
-	result := scenario{Name: name, Expected: expectations[name], Summary: "实际响应与预期不一致，请查看逐条判定。", Rows: []row{}}
+	result := scenario{Name: name, Expected: expectations[name], Summary: "The responses did not match expectations. Check the request log for individual decisions.", Rows: []row{}}
 	add := func(t, u string, lookup bool) (row, *snapshot) {
 		line, b := a.step(ctx, t, u, lookup)
 		result.Rows = append(result.Rows, line)
@@ -108,7 +109,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 		return result
 	}
 	if b.Capacity < 1 || b.Capacity > 50 || b.Rate <= 0 {
-		result.Summary = "操作台场景支持容量 1 至 50、正漏速；仍可手动发起请求。"
+		result.Summary = "Scenarios require a capacity from 1 to 50 and a positive leak rate. You can still send requests manually."
 		return result
 	}
 	if name == "shared" {
@@ -139,7 +140,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 	case "recovery":
 		waitSeconds := 1 / b.Rate
 		if waitSeconds > 15 {
-			result.Summary = "当前漏速需要等待超过 15 秒，请使用手动请求验证恢复。"
+			result.Summary = "With the current leak rate, recovery takes more than 15 seconds. Use manual requests to test it."
 			return result
 		}
 		timer := time.NewTimer(time.Duration(math.Ceil(waitSeconds*1000)+30) * time.Millisecond)
@@ -160,7 +161,7 @@ func (a *app) runScenario(ctx context.Context, name, target string) scenario {
 		}
 	}
 	result.Passed = true
-	result.Summary = fmt.Sprintf("通过 · %d 次真实调用。%s", len(result.Rows), result.Expected)
+	result.Summary = fmt.Sprintf("Passed · %d live requests. %s", len(result.Rows), result.Expected)
 	return result
 }
 
@@ -170,18 +171,18 @@ func (a *app) scenarioHTTP(w http.ResponseWriter, r *http.Request) {
 		target = "cluster"
 	}
 	if _, ok := expectations[name]; !ok {
-		jsonReply(w, 404, map[string]string{"error": "未知场景"})
+		jsonReply(w, 404, map[string]string{"error": "Unknown scenario"})
 		return
 	}
 	if _, ok := a.targets[target]; !ok {
-		jsonReply(w, 400, map[string]string{"error": "未知服务目标"})
+		jsonReply(w, 400, map[string]string{"error": "Unknown service target"})
 		return
 	}
 	select {
 	case a.slots <- struct{}{}:
 		defer func() { <-a.slots }()
 	default:
-		jsonReply(w, 429, map[string]string{"error": "正在运行的演示较多，请稍后再试"})
+		jsonReply(w, 429, map[string]string{"error": "Too many scenarios are running. Try again shortly."})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

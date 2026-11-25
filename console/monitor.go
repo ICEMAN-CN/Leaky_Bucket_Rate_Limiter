@@ -85,7 +85,7 @@ func (m *monitor) collect(ctx context.Context, client *http.Client, targets map[
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// 多留一个基准点，用来计算首个可见区间的增量。
+	// Keep one extra baseline sample to calculate the delta for the first visible interval.
 	for len(m.samples) > 1 && m.samples[1].at.Before(now.Add(-retention)) {
 		m.samples = m.samples[1:]
 	}

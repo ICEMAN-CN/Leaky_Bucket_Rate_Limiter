@@ -19,20 +19,20 @@ func TestHistoryAggregatesAndShowsGaps(t *testing.T) {
 	first := intervalAt(2, node("go-a", "a", 94, 0), node("go-b", "b", 6, 7))
 	p := summarize(initial, first, instanceIDs[1:])
 	if p.Partial || *p.Allowed != 100 || *p.RPS != 50 || *p.P95 != -1 {
-		t.Fatalf("聚合错误 %+v", p)
+		t.Fatalf("incorrect aggregation: %+v", p)
 	}
 	next := intervalAt(4, node("go-a", "restarted", 10, 0), node("go-b", "b", 6, 7))
 	p = summarize(first, next, instanceIDs[1:])
 	if !p.Partial || *p.Allowed != 0 || p.P95 != nil {
-		t.Fatalf("重启被计为新增 %+v", p)
+		t.Fatalf("restart was counted as new traffic: %+v", p)
 	}
 	p = summarize(first, next, []string{"go-a"})
 	if !p.Partial || p.RPS != nil || p.Allowed != nil {
-		t.Fatalf("缺口被误计为零 %+v", p)
+		t.Fatalf("missing data was counted as zero: %+v", p)
 	}
 	delayed := intervalAt(20, node("go-a", "a", 98, 0), node("go-b", "b", 10, 7))
 	p = summarize(first, delayed, instanceIDs[1:])
 	if !p.Partial || p.RPS != nil {
-		t.Fatalf("采样暂停应显示缺口 %+v", p)
+		t.Fatalf("a sampling pause should show a gap: %+v", p)
 	}
 }

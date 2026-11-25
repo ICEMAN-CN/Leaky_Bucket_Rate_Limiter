@@ -8,12 +8,12 @@
           (json/read-value (slurp "../contracts/cases.json" :encoding "UTF-8")
                            (json/object-mapper {:decode-key-fn true :bigdecimals true}))]
     (testing name
-      (reduce (fn [limiter {:keys [user_id timestamp allowed level as_of]}]
+      (reduce (fn [limiter {:keys [user_id timestamp allowed level updated_at]}]
                 (let [[actual next-state] (core/allow-request limiter user_id timestamp)
                       bucket (core/get-bucket-state next-state user_id)]
                   (is (= allowed actual))
                   (is (== level (:level bucket)))
-                  (is (== as_of (:as_of bucket)))
+                  (is (== updated_at (:updated_at bucket)))
                   next-state))
               (core/create-rate-limiter capacity leak_rate) steps))))
 

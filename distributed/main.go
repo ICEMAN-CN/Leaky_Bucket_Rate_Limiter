@@ -24,11 +24,11 @@ func env(key, fallback string) string {
 func run() error {
 	capacity, err := strconv.ParseInt(env("CAPACITY", "5"), 10, 0)
 	if err != nil || capacity <= 0 || capacity > 1<<53-1 {
-		return fmt.Errorf("CAPACITY 必须是 Redis Lua 可以精确表示的正整数（最大 9007199254740991）")
+		return fmt.Errorf("CAPACITY must be a positive integer Redis Lua can represent exactly (maximum 9007199254740991)")
 	}
 	rate, err := strconv.ParseFloat(env("LEAK_RATE", "1.0"), 64)
 	if err != nil || rate <= 0 || math.IsInf(rate, 0) || math.IsNaN(rate) {
-		return fmt.Errorf("LEAK_RATE 必须为有限正数")
+		return fmt.Errorf("LEAK_RATE must be positive and finite")
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -46,7 +46,7 @@ func run() error {
 	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()
-	log.Printf("实例 %s 监听 %s", instance, server.Addr)
+	log.Printf("Instance %s listening on %s", instance, server.Addr)
 	select {
 	case err := <-done:
 		return err

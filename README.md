@@ -2,7 +2,7 @@
 
 A small REST service that decides whether a user can make one more request now. The Clojure implementation is the standalone answer to the programming exercise. A separate Go implementation demonstrates how to preserve a user's quota across two application instances. Both run against the same set of time-based examples.
 
-[简体中文项目指南](README.zh-CN.md) · [中文代码导读与面试演示](docs/interview.md)
+[Clojure walkthrough and interview demo](docs/interview.md)
 
 ## Run the assignment
 
@@ -25,7 +25,7 @@ curl -s http://127.0.0.1:8081/v1/buckets/alice
 For a new user with the default settings, the first call returns HTTP 200. The example below uses an illustrative Unix timestamp.
 
 ```json
-{"allowed":true,"instance":"clojure","bucket":{"level":1,"as_of":1700000000,"capacity":5,"leak_rate":1.0}}
+{"allowed":true,"instance":"clojure","bucket":{"level":1,"updated_at":1700000000,"capacity":5,"leak_rate":1.0}}
 ```
 
 ## How admission works
@@ -47,14 +47,14 @@ Use `Content-Type: application/json` on POST. Both request bodies accept one fie
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /v1/check` | Returns 200 when allowed or 429 when the bucket is full. Both include the resulting bucket snapshot. An invalid request returns 400. |
+| `POST /v1/check` | Returns 200 when allowed or 429 when less than one unit of capacity remains after leakage. Both include the resulting bucket snapshot. An invalid request returns 400. |
 | `GET /v1/buckets/{user_id}` | Returns the most recently settled snapshot or 404 for an unknown bucket. URL-encode the user ID as one path segment. |
 | `POST /v1/bucket-state` | Read-only lookup with the same JSON body as a check. Use it for long IDs and IDs such as `.` or `..` that browsers normalize in paths. Reading consumes no quota and creates no bucket. |
 | `GET /livez`, `GET /readyz` | Process liveness and service readiness. Go readiness includes a Redis connectivity check. |
 
-The snapshot's `level` is measured at `as_of`, expressed in Unix seconds. Refreshing the lookup returns the same stored values until another decision or Redis key expiry. The Clojure core returns `nil` for an unknown user. HTTP represents that outcome as 404.
+The snapshot's `level` is measured at `updated_at`, expressed in Unix seconds. Refreshing the lookup returns the same stored values until another decision or Redis key expiry. The Clojure core returns `nil` for an unknown user. HTTP represents that outcome as 404.
 
-## Run the distributed demo
+## Optional Go and Redis demo
 
 | Command | Result |
 | --- | --- |
@@ -64,7 +64,7 @@ The snapshot's `level` is measured at `as_of`, expressed in Unix seconds. Refres
 | `make deploy` | Start the same stack on the current Docker host. Published ports bind to loopback. |
 | `make status` / `make down` | Inspect service health or stop the stack while retaining the Redis volume. |
 
-Open the [local console](http://127.0.0.1:8080/) or send requests directly to the Go gateway on port 8082. In the console, **验证跨实例共享** runs the shared-quota scenario. Go A accepts the first request, Go B reads its snapshot, and subsequent requests alternate between them. **请求实验** opens the manual request controls.
+Open the [local console](http://127.0.0.1:8080/) or send requests directly to the Go gateway on port 8082. In the console, **Test shared quota** runs the shared-quota scenario. Go A accepts the first request, Go B reads its snapshot, and subsequent requests alternate between them. **Request testing** opens the manual request controls.
 
 ![Console showing real admission traffic, instance health and a user's bucket](docs/console.png)
 

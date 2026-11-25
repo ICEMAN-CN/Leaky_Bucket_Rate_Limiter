@@ -53,7 +53,7 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 	case "clojure", "go-a", "go-b":
 		ids = []string{target}
 	default:
-		jsonReply(w, 400, map[string]string{"error": "未知监控目标"})
+		jsonReply(w, 400, map[string]string{"error": "Unknown monitoring target"})
 		return
 	}
 	jsonReply(w, 200, a.metrics.history(ids))
@@ -63,7 +63,7 @@ func (a *app) proxy(w http.ResponseWriter, r *http.Request) {
 	target := r.PathValue("target")
 	base, ok := a.targets[target]
 	if !ok {
-		jsonReply(w, 400, map[string]string{"error": "未知服务目标"})
+		jsonReply(w, 400, map[string]string{"error": "Unknown service target"})
 		return
 	}
 	path := "/v1/check"
@@ -74,7 +74,7 @@ func (a *app) proxy(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/v1/bucket-state") {
 			path = "/v1/bucket-state"
 		}
-		// 先读完有界请求体，避免把读取客户端输入的错误误报为上游不可用。
+		// Read the bounded request body first so input errors are reported separately from upstream failures.
 		payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 		if err != nil {
 			jsonReply(w, 400, map[string]string{"error": "invalid_request", "instance": target})
@@ -84,20 +84,20 @@ func (a *app) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, base+path, body)
 	if err != nil {
-		jsonReply(w, 400, map[string]string{"error": "请求无效"})
+		jsonReply(w, 400, map[string]string{"error": "Invalid request"})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		jsonReply(w, 503, map[string]string{"error": "目标服务无法连接", "instance": target})
+		jsonReply(w, 503, map[string]string{"error": "Target service is unreachable", "instance": target})
 		return
 	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
-		jsonReply(w, resp.StatusCode, map[string]string{"error": "目标服务未返回 JSON", "instance": target})
+		jsonReply(w, resp.StatusCode, map[string]string{"error": "Target service did not return JSON", "instance": target})
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -119,7 +119,7 @@ func (a *app) routes() http.Handler {
 		if r.Method == "POST" && r.Header.Get("Origin") != "" {
 			origin, err := url.Parse(r.Header.Get("Origin"))
 			if err != nil || !strings.EqualFold(origin.Host, r.Host) {
-				jsonReply(w, 403, map[string]string{"error": "跨站操作被拒绝"})
+				jsonReply(w, 403, map[string]string{"error": "Cross-site request was blocked"})
 				return
 			}
 		}
@@ -145,7 +145,7 @@ func demo() error {
 		}
 		fmt.Printf("%s · %s\n", name, result.Summary)
 		if resp.StatusCode != 200 || !result.Passed {
-			return fmt.Errorf("场景 %s 验收失败", name)
+			return fmt.Errorf("scenario %s failed verification", name)
 		}
 	}
 	return nil
@@ -187,7 +187,7 @@ func main() {
 		defer done()
 		_ = s.Shutdown(shutdown)
 	}()
-	log.Print("操作台监听 ", s.Addr)
+	log.Print("Console listening on ", s.Addr)
 	if err := s.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

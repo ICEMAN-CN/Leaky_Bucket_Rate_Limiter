@@ -39,12 +39,12 @@ func testRedis(t *testing.T) string {
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("需要本机 redis-server 或设定 REDIS_TEST_ADDR：%v", err)
+		t.Fatalf("local redis-server or REDIS_TEST_ADDR is required: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
 		if err := cmd.Wait(); err != nil {
-			t.Logf("Redis 测试进程退出：%v, %s", err, output.String())
+			t.Logf("test Redis process exited: %v, %s", err, output.String())
 		}
 	})
 	client := newRedisStore(address, 5, 1)
@@ -55,7 +55,7 @@ func testRedis(t *testing.T) string {
 			break
 		}
 		if time.Now().After(until) {
-			t.Fatal("Redis 启动超时")
+			t.Fatal("Redis startup timed out")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -76,12 +76,12 @@ func testUser(t *testing.T, client *redis.Client) string {
 
 func TestRedis(t *testing.T) {
 	addr := testRedis(t)
-	t.Run("共享契约", func(t *testing.T) { checkVectors(t, addr) })
-	t.Run("空桶回收", func(t *testing.T) { checkExpiry(t, addr) })
-	t.Run("配置滚动切换", func(t *testing.T) { checkPolicyChange(t, addr) })
-	t.Run("升级旧格式的活跃桶", func(t *testing.T) { checkLegacyPolicy(t, addr) })
-	t.Run("两个HTTP实例原子扣量", func(t *testing.T) { checkConcurrent(t, addr) })
-	t.Run("存储网络中断并恢复", func(t *testing.T) { checkDisconnect(t, addr) })
+	t.Run("shared contract", func(t *testing.T) { checkVectors(t, addr) })
+	t.Run("empty bucket expiry", func(t *testing.T) { checkExpiry(t, addr) })
+	t.Run("rolling policy update", func(t *testing.T) { checkPolicyChange(t, addr) })
+	t.Run("upgrade an active legacy bucket", func(t *testing.T) { checkLegacyPolicy(t, addr) })
+	t.Run("atomic admission across two HTTP instances", func(t *testing.T) { checkConcurrent(t, addr) })
+	t.Run("storage network interruption and recovery", func(t *testing.T) { checkDisconnect(t, addr) })
 }
 
 func checkLegacyPolicy(t *testing.T, addr string) {
@@ -90,7 +90,7 @@ func checkLegacyPolicy(t *testing.T, addr string) {
 	if ok, _, err := original.check(t.Context(), user); !ok || err != nil {
 		t.Fatal(ok, err)
 	}
-	// 旧版只保存水位、时间和忙期计数，不包含配置。
+	// The legacy format records level, time and busy-period count without a policy snapshot.
 	if err := original.client.HDel(t.Context(), bucketKey(user),
 		"capacity", "leak_rate", "units", "period", "compact").Err(); err != nil {
 		t.Fatal(err)
@@ -118,16 +118,16 @@ func checkPolicyChange(t *testing.T, addr string) {
 	}
 	before, err := changed.get(t.Context(), user)
 	if err != nil || before == nil || before.Capacity != 1 || before.LeakRate != 0.01 {
-		t.Fatalf("新副本读取旧桶得到 %+v，错误 %v", before, err)
+		t.Fatalf("new replica read legacy bucket %+v, error %v", before, err)
 	}
 	if ok, b, err := changed.check(t.Context(), user); ok || err != nil || b.Capacity != 1 || b.LeakRate != 0.01 {
-		t.Fatalf("忙桶应继续原策略，得到 %+v，放行 %t，错误 %v", b, ok, err)
+		t.Fatalf("busy bucket should retain its original policy, got %+v, allowed %t, error %v", b, ok, err)
 	}
 	fresh := testUser(t, changed.client)
 	if ok, b, err := changed.check(t.Context(), fresh); !ok || err != nil || b.Capacity != 5 || b.LeakRate != 20 {
 		t.Fatal(ok, b, err)
 	}
-	// 等新建的高速桶真正排空；之后第一次请求应采纳接收它的副本的配置。
+	// Wait until the new high-rate bucket drains. The next request should adopt the handling replica's policy.
 	until := time.Now().Add(2 * time.Second)
 	for {
 		b, err := original.get(t.Context(), fresh)
@@ -158,7 +158,7 @@ func TestDecimalLeakPeriod(t *testing.T) {
 		{1e8, leakPeriod{100, 1, 1}},
 	} {
 		if got := periodFor(tc.rate); got != tc.want {
-			t.Errorf("速率 %g 的微秒周期为 %+v，预期 %+v", tc.rate, got, tc.want)
+			t.Errorf("microsecond schedule for leak rate %g is %+v, want %+v", tc.rate, got, tc.want)
 		}
 	}
 }
@@ -177,16 +177,16 @@ func checkVectors(t *testing.T, addr string) {
 			Timestamp float64
 			Allowed   bool
 			Level     float64
-			AsOf      float64 `json:"as_of"`
+			UpdatedAt float64 `json:"updated_at"`
 		}
 	}
 	if err := json.Unmarshal(file, &cases); err != nil {
 		t.Fatal(err)
 	}
 	if len(cases) == 0 {
-		t.Fatal("空契约")
+		t.Fatal("empty contract")
 	}
-	// 只在测试中给纯状态转换传入时间；生产入口始终调用 Redis TIME。
+	// Inject the time into the pure transition only in tests. The production entry point always calls Redis TIME.
 	script := redis.NewScript(advanceScript + `
 local allowed, water, at, count, anchor = advance(tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[7]), ARGV[8] == '1')
 return {allowed and 1 or 0, string.format('%.17g', water), string.format('%.0f', at), count, anchor}`)
@@ -210,10 +210,10 @@ return {allowed and 1 or 0, string.format('%.17g', water), string.format('%.0f',
 				if err != nil {
 					t.Fatal(err)
 				}
-				if (values[0].(int64) == 1) != step.Allowed || math.Abs(b.Level-step.Level) > 1e-9 || b.AsOf != step.AsOf {
-					t.Fatalf("第 %d 步得到 %v；期望 %+v", i, values, step)
+				if (values[0].(int64) == 1) != step.Allowed || math.Abs(b.Level-step.Level) > 1e-9 || b.UpdatedAt != step.UpdatedAt {
+					t.Fatalf("step %d returned %v, want %+v", i, values, step)
 				}
-				states[step.User] = state{values[3].(int64), values[4].(int64), int64(math.Round(b.AsOf * 1e6))}
+				states[step.User] = state{values[3].(int64), values[4].(int64), int64(math.Round(b.UpdatedAt * 1e6))}
 			}
 		})
 	}
@@ -230,14 +230,14 @@ func checkExpiry(t *testing.T, addr string) {
 	if err != nil || stored == nil || *stored != b {
 		t.Fatal(stored, err)
 	}
-	// Redis 返回绝对毫秒到期时间；不能向下取整而提前释放额度。
+	// Redis returns an absolute expiry in milliseconds. Rounding down would release quota early.
 	expiry, err := s.client.Do(t.Context(), "PEXPIRETIME", bucketKey(user)).Int64()
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := math.Ceil(float64(math.Round(b.AsOf*1e6))/1000 + b.Level/s.rate*1000)
+	expected := math.Ceil(float64(math.Round(b.UpdatedAt*1e6))/1000 + b.Level/s.rate*1000)
 	if expiry != int64(expected) {
-		t.Fatalf("到期 %d，预期 %.0f", expiry, expected)
+		t.Fatalf("expiry %d, want %.0f", expiry, expected)
 	}
 	fast := testStore(t, addr, 1, 40)
 	fastUser := testUser(t, fast.client)
@@ -254,7 +254,7 @@ func checkExpiry(t *testing.T, addr string) {
 			break
 		}
 		if time.Now().After(until) {
-			t.Fatal("已漏空的桶未回收")
+			t.Fatal("empty bucket did not expire")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -308,7 +308,7 @@ func checkConcurrent(t *testing.T, addr string) {
 	}
 }
 
-// TCP 代理只作用于本用例，故障测试可以安全地和其他测试共用 Redis。
+// Only this test uses the TCP proxy, so it can simulate an outage while sharing Redis with other tests.
 func checkDisconnect(t *testing.T, addr string) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -347,7 +347,7 @@ func checkDisconnect(t *testing.T, addr string) {
 	s := testStore(t, listener.Addr().String(), 1, 0.001)
 	user := testUser(t, s.client)
 	payload := `{"user_id":` + strconv.Quote(user) + `}`
-	handler := newAPI(s, "故障测试")
+	handler := newAPI(s, "outage-test")
 	decodeResponse[map[string]any](t, request(handler, "POST", "/v1/check", payload), 200)
 	mu.Lock()
 	online = false
@@ -358,7 +358,7 @@ func checkDisconnect(t *testing.T, addr string) {
 	start := time.Now()
 	decodeResponse[map[string]string](t, request(handler, "POST", "/v1/check", payload), 503)
 	if time.Since(start) > 2*time.Second {
-		t.Fatal("存储失败未在期限内返回")
+		t.Fatal("storage failure exceeded the deadline")
 	}
 	decodeResponse[map[string]string](t, request(handler, "GET", "/readyz", ""), 503)
 	decodeResponse[map[string]string](t, request(handler, "GET", "/livez", ""), 200)

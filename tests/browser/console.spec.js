@@ -8,15 +8,15 @@ const freshUser = () => "test-" + randomUUID();
 class ConsolePage {
   constructor(page) {
     this.page = page;
-    this.monitor = page.getByLabel("监控目标");
-    this.target = page.getByLabel("请求目标");
-    this.user = page.getByLabel("用户 ID");
-    this.log = page.getByRole("table", { name: "请求记录", exact: true });
-    this.health = page.getByRole("list", { name: "实例列表" });
+    this.monitor = page.getByLabel("Monitor target");
+    this.target = page.getByLabel("Request target");
+    this.user = page.getByLabel("User ID");
+    this.log = page.getByRole("table", { name: "Request log", exact: true });
+    this.health = page.getByRole("list", { name: "Instance list" });
   }
   async open() {
     await this.page.goto("/");
-    await expect(this.page.getByRole("heading", { name: "限流操作台" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Rate limiting console" })).toBeVisible();
   }
   button(name) {
     return this.page.getByRole("button", { name, exact: true });
@@ -29,74 +29,77 @@ class ConsolePage {
   }
 }
 
-test.describe("操作台", () => {
-  test.skip(outage, "常规验收依赖健康的 Redis");
+test.describe("Console", () => {
+  test.skip(outage, "The normal suite requires a healthy Redis server");
 
-  test("查询未知用户、发送突发、读取快照并清空记录", async ({ page }) => {
+  test("looks up an unknown user, sends a burst, reads the snapshot, and clears the log", async ({ page }) => {
     const ui = new ConsolePage(page);
     const user = freshUser();
     await ui.open();
     await ui.user.fill(user);
-    await ui.button("查询水位").click();
-    await expect(ui.log.getByRole("row").filter({ hasText: "404" })).toContainText("无桶记录");
-    await ui.button("突发 6 次").click();
-    await expect(ui.log.getByRole("cell", { name: "放行", exact: true })).toHaveCount(5);
-    await expect(ui.log.getByRole("cell", { name: "限流", exact: true })).toHaveCount(1);
+    await ui.button("Look up bucket").click();
+    await expect(ui.log.getByRole("row").filter({ hasText: "404" })).toContainText("No bucket");
+    await ui.button("Send burst of 6").click();
+    await expect(ui.log.getByRole("cell", { name: "Allowed", exact: true })).toHaveCount(5);
+    await expect(ui.log.getByRole("cell", { name: "Rate limited", exact: true })).toHaveCount(1);
     await expect(ui.log.getByRole("row").filter({ hasText: "429" })).toContainText(user);
-    await ui.button("查询水位").click();
-    await expect(ui.log.getByRole("cell", { name: "已查询", exact: true })).toHaveCount(1);
+    await ui.button("Look up bucket").click();
+    await expect(ui.log.getByRole("cell", { name: "Read", exact: true })).toHaveCount(1);
     await expect(page.getByRole("meter")).toHaveAttribute("aria-valuemax", "5");
     await ui.user.fill(freshUser());
-    await expect(page.getByRole("meter")).toHaveAttribute("aria-valuetext", "暂无快照");
-    await ui.button("发送一次").click();
-    await expect(ui.log.getByRole("cell", { name: "放行", exact: true })).toHaveCount(6);
-    await ui.button("清空记录").click();
+    await expect(page.getByRole("meter")).toHaveAttribute("aria-valuetext", "No snapshot yet");
+    await ui.button("Send one request").click();
+    await expect(ui.log.getByRole("cell", { name: "Allowed", exact: true })).toHaveCount(6);
+    await ui.button("Clear log").click();
     await expect(ui.log.getByRole("row")).toHaveCount(1);
   });
 
-  test("手动查桶保留点段、特殊字符和长用户 ID", async ({ page }) => {
+  test("manual lookups preserve dot segments, special characters, and long user IDs", async ({ page }) => {
     const ui = new ConsolePage(page);
     await ui.open();
-    for (const user of [".", "..", "甲 /+?%#", "long-" + "x".repeat(9000)]) {
+    for (const user of [".", "..", "\u7532 /+?%#", "long-" + "x".repeat(9000)]) {
       await ui.user.fill(user);
       const sent = page.waitForResponse((response) => response.url().endsWith("/v1/check"));
-      await ui.button("发送一次").click();
+      await ui.button("Send one request").click();
       const admitted = await (await sent).json();
       const read = page.waitForResponse((response) => response.url().endsWith("/v1/bucket-state"));
-      await ui.button("查询水位").click();
+      await ui.button("Look up bucket").click();
       const response = await read;
       expect(response.request().method()).toBe("POST");
       expect(response.request().postDataJSON()).toEqual({ user_id: user });
       expect(response.status()).toBe(200);
       expect((await response.json()).bucket).toEqual(admitted.bucket);
-      await expect(page.getByText("已读取最近结算的桶快照。")).toBeVisible();
+      await expect(page.getByText("Read the last settled bucket snapshot.")).toBeVisible();
     }
   });
 
-  for (const name of ["漏水恢复", "用户隔离", "跨实例共享"]) {
-    test("真实限流实验 · " + name, async ({ page }) => {
+  for (const name of ["Quota recovery", "User isolation", "Shared quota"]) {
+    test("Live rate-limit scenario · " + name, async ({ page }) => {
       const ui = new ConsolePage(page);
       await ui.open();
-      await ui.button("验证" + name).click();
-      await expect(page.getByRole("status").filter({ hasText: name + " · 验证通过" })).toBeVisible();
-      await expect(ui.log.getByRole("cell", { name: "限流", exact: true })).toHaveCount(1);
-      const rows = ui.log.getByRole("row");
-      if (name === "跨实例共享") {
+      await ui.button("Test " + name.toLowerCase()).click();
+      await expect(page.getByRole("status").filter({ hasText: name + " · Passed" })).toBeVisible();
+      await expect(ui.log.getByRole("cell", { name: "Rate limited", exact: true })).toHaveCount(1);
+      const rows = ui.log.locator("tbody tr");
+      if (name === "Shared quota") {
         await expect(rows.filter({ hasText: "go-a" }).first()).toBeVisible();
         await expect(rows.filter({ hasText: "go-b" }).first()).toBeVisible();
-        await expect(rows.filter({ hasText: "已查询" })).toHaveCount(1);
+        await expect(rows.filter({ hasText: "Read" })).toHaveCount(1);
       }
-      if (name === "用户隔离") await expect(rows.last()).toContainText(/demo-\w+-b/);
-      if (name === "漏水恢复") await expect(rows.last()).toContainText("放行");
+      if (name === "User isolation" || name === "Quota recovery") {
+        await expect(rows.first()).toContainText("Allowed");
+        await expect(rows.nth(1)).toContainText("Rate limited");
+      }
+      if (name === "User isolation") await expect(rows.first()).toContainText(/demo-\w+-b/);
     });
   }
 
-  test("外部客户端产生流量，浏览器重开后仍读到服务端历史", async ({ page, request }) => {
+  test("tracks external traffic and preserves server-side history when the page is reopened", async ({ page, request }) => {
     const ui = new ConsolePage(page);
     await ui.open();
     await ui.monitor.selectOption("clojure");
-    await expect(ui.metric("放行请求")).toHaveText(/^[\d,]+$/);
-    const before = Number((await ui.metric("放行请求").innerText()).replaceAll(",", ""));
+    await expect(ui.metric("Allowed requests")).toHaveText(/^[\d,]+$/);
+    const before = Number((await ui.metric("Allowed requests").innerText()).replaceAll(",", ""));
     await page.goto("about:blank");
     for (let i = 0; i < 3; i++) {
       const result = await request.post(external + "/v1/check", { data: { user_id: freshUser() } });
@@ -111,18 +114,18 @@ test.describe("操作台", () => {
     await ui.open();
     await ui.monitor.selectOption("clojure");
     await expect
-      .poll(async () => Number((await ui.metric("放行请求").innerText()).replaceAll(",", "")))
+      .poll(async () => Number((await ui.metric("Allowed requests").innerText()).replaceAll(",", "")))
       .toBeGreaterThanOrEqual(before + 3);
-    await page.getByLabel("时间范围").selectOption("300");
-    await page.getByText("最近采样明细", { exact: true }).click();
-    await expect(page.getByRole("table", { name: "最近采样明细" }).getByRole("row").nth(1)).toBeVisible();
+    await page.getByLabel("Time range").selectOption("300");
+    await page.getByText("Recent samples", { exact: true }).click();
+    await expect(page.getByRole("table", { name: "Recent samples" }).getByRole("row").nth(1)).toBeVisible();
     await ui.monitor.selectOption("go-a");
     await expect(ui.health.getByRole("listitem")).toHaveCount(1);
     await expect(ui.health).toContainText("Go A");
-    await expect(ui.health).toContainText("就绪");
+    await expect(ui.health).toContainText("Ready");
   });
 
-  test("缺失采样、延迟上界与采样中断分别呈现", async ({ page }) => {
+  test("shows sampling gaps, latency bounds, and sampler disconnection separately", async ({ page }) => {
     const ui = new ConsolePage(page);
     const now = Math.floor(Date.now() / 1000);
     let unavailable = false;
@@ -149,59 +152,59 @@ test.describe("操作台", () => {
       });
     });
     await ui.open();
-    await expect(ui.metric("P95 耗时")).toHaveText(">500");
-    await expect(ui.metric("放行请求")).toHaveText("3");
-    await expect(ui.health).toContainText("就绪 · 指标缺失");
-    await expect(page.getByText("1 / 1 就绪", {exact: true})).toBeVisible();
-    await expect(page.getByText("次 / 秒 · 部分实例", { exact: true })).toBeVisible();
-    await expect(page.getByText("毫秒 · 部分实例上界", { exact: true })).toBeVisible();
-    await expect(page.getByText("统计仅包含已采集的请求", { exact: false })).toBeVisible();
-    await page.getByText("最近采样明细", { exact: true }).click();
+    await expect(ui.metric("p95 latency")).toHaveText(">500");
+    await expect(ui.metric("Allowed requests")).toHaveText("3");
+    await expect(ui.health).toContainText("Ready · Metrics missing");
+    await expect(page.getByText("1 / 1 ready", {exact: true})).toBeVisible();
+    await expect(page.getByText("req/s · Partial", { exact: true })).toBeVisible();
+    await expect(page.getByText("ms · Partial upper bound", { exact: true })).toBeVisible();
+    await expect(page.getByText("Totals include only sampled requests", { exact: false })).toBeVisible();
+    await page.getByText("Recent samples", { exact: true }).click();
     const missing = page
-      .getByRole("table", { name: "最近采样明细" })
+      .getByRole("table", { name: "Recent samples" })
       .getByRole("row")
-      .filter({ hasText: "缺失" });
+      .filter({ hasText: "Missing" });
     await expect(missing.getByRole("cell", { name: "—", exact: true })).toHaveCount(4);
     unavailable = true;
-    await expect(page.getByText("采样连接中断")).toBeVisible();
-    await expect(ui.metric("放行请求")).toHaveText("3");
+    await expect(page.getByText("Sampling disconnected")).toBeVisible();
+    await expect(ui.metric("Allowed requests")).toHaveText("3");
   });
 
-  test("窄屏可切换实验目标与操作，无横向页面溢出", async ({ page }) => {
+  test("supports target selection and requests on narrow screens without horizontal page overflow", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 780 });
     const ui = new ConsolePage(page);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await ui.open();
-    await page.getByRole("link", { name: "请求实验" }).click();
+    await page.getByRole("link", { name: "Request testing" }).click();
     await ui.target.selectOption("go-b");
     await ui.user.fill(freshUser());
-    await ui.button("发送一次").click();
-    await expect(ui.log.getByRole("row").filter({ hasText: "go-b" })).toContainText("放行");
+    await ui.button("Send one request").click();
+    await expect(ui.log.getByRole("row").filter({ hasText: "go-b" })).toContainText("Allowed");
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
     expect(errors).toEqual([]);
   });
 });
 
-test.describe("Redis 故障", () => {
-  test.skip(!outage, "独立故障演练由 OUTAGE=1 启用");
-  test("Redis 停止时页面显示 HTTP 503、系统错误和未就绪实例", async ({ page }) => {
+test.describe("Redis outage", () => {
+  test.skip(!outage, "The isolated outage scenario runs with OUTAGE=1");
+  test("shows HTTP 503, service errors, and unready instances when Redis is down", async ({ page }) => {
     const ui = new ConsolePage(page);
     await ui.open();
-    // 故障演练可能也停掉了 go-a，直接请求仍在运行的 go-b。
+    // The outage scenario can also stop go-a. Send requests directly to the surviving go-b.
     await ui.monitor.selectOption("go-b");
-    await expect(ui.metric("系统错误")).toHaveText(/^[\d,]+$/);
-    const baseline = Number((await ui.metric("系统错误").innerText()).replaceAll(",", ""));
+    await expect(ui.metric("Service errors")).toHaveText(/^[\d,]+$/);
+    const baseline = Number((await ui.metric("Service errors").innerText()).replaceAll(",", ""));
     await ui.target.selectOption("go-b");
     await ui.user.fill(freshUser());
-    await ui.button("发送一次").click();
-    await expect(page.getByText("限流服务暂不可用", { exact: false })).toBeVisible();
-    await expect(ui.log.getByRole("row").filter({ hasText: "503" })).toContainText("失败");
-    await expect(ui.log.getByRole("cell", { name: "限流", exact: true })).toHaveCount(0);
-    await expect(ui.health).toContainText("未就绪");
+    await ui.button("Send one request").click();
+    await expect(page.getByText("Rate limiter unavailable", { exact: false })).toBeVisible();
+    await expect(ui.log.getByRole("row").filter({ hasText: "503" })).toContainText("Failed");
+    await expect(ui.log.getByRole("cell", { name: "Rate limited", exact: true })).toHaveCount(0);
+    await expect(ui.health).toContainText("Not ready");
     await expect
-      .poll(async () => Number((await ui.metric("系统错误").innerText()).replaceAll(",", "")))
+      .poll(async () => Number((await ui.metric("Service errors").innerText()).replaceAll(",", "")))
       .toBeGreaterThan(baseline);
   });
 });

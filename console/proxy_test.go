@@ -25,41 +25,41 @@ func TestProxyPreservesLookupAndBodyLimit(t *testing.T) {
 	handler := a.routes()
 	query := func(method, path string, body []byte) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/api/targets/clojure"+path, bytes.NewReader(body))
-		r.ContentLength = -1 // 分块传输的客户端同样受上限约束。
+		r.ContentLength = -1 // The same limit applies to clients that send chunked bodies.
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
 
-	for _, user := range []string{".", "..", "姓名 /+?#%", strings.Repeat("x", 32000)} {
+	for _, user := range []string{".", "..", "\u59d3\u540d /+?#%", strings.Repeat("x", 32000)} {
 		body, _ := json.Marshal(map[string]string{"user_id": user})
 		w := query(http.MethodPost, "/v1/bucket-state", body)
 		if w.Code != 200 || upstreamMethod != "POST" || upstreamURI != "/v1/bucket-state" || !bytes.Equal(upstreamBody, body) {
-			t.Fatalf("查桶请求发生改变，ID 长度 %d，HTTP %d", len(user), w.Code)
+			t.Fatalf("bucket lookup changed, ID length %d, HTTP %d", len(user), w.Code)
 		}
 	}
 	w := query(http.MethodGet, "/v1/buckets/a%2Fb", nil)
 	if w.Code != 200 || upstreamMethod != "GET" || upstreamURI != "/v1/buckets/a%2Fb" {
-		t.Fatalf("旧查询路径不兼容，HTTP %d，上游 %s", w.Code, upstreamURI)
+		t.Fatalf("legacy lookup path failed, HTTP %d, upstream %s", w.Code, upstreamURI)
 	}
-	// 恰好 64 KiB 的有效 JSON（尾随空白合法）可以原样到达上游。
+	// Valid JSON at exactly 64 KiB, including trailing whitespace, can reach the upstream service unchanged.
 	body := []byte(`{"user_id":"edge"}`)
 	body = append(body, bytes.Repeat([]byte(" "), (64<<10)-len(body))...)
 	for _, path := range []string{"/v1/check", "/v1/bucket-state"} {
 		if w := query(http.MethodPost, path, body); w.Code != 200 || !bytes.Equal(upstreamBody, body) {
-			t.Fatalf("%s 错误处理了边界长度请求", path)
+			t.Fatalf("%s mishandled a request at the size limit", path)
 		}
 		upstreamURI = ""
 		w := query(http.MethodPost, path, append(body, ' '))
 		var result map[string]string
 		if w.Code != 400 || json.Unmarshal(w.Body.Bytes(), &result) != nil || result["error"] != "invalid_request" || upstreamURI != "" {
-			t.Fatalf("%s 超限应在代理返回输入错误，实际 HTTP %d，响应 %s", path, w.Code, w.Body.String())
+			t.Fatalf("%s should reject an oversized request at the proxy, got HTTP %d, body %s", path, w.Code, w.Body.String())
 		}
 	}
 }
 
 func TestScenarioRejectsContradictoryDecision(t *testing.T) {
-	// HTTP 200 搭配 allowed=false 是协议错误，场景必须在第一行停止。
+	// HTTP 200 with allowed=false violates the contract and must stop the scenario at the first row.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		jsonReply(w, 200, map[string]any{
 			"allowed": false, "instance": "clojure",
@@ -70,6 +70,6 @@ func TestScenarioRejectsContradictoryDecision(t *testing.T) {
 	a := app{targets: map[string]string{"clojure": server.URL}, client: server.Client()}
 	result := a.runScenario(context.Background(), "isolation", "clojure")
 	if result.Passed || len(result.Rows) != 1 {
-		t.Fatalf("矛盾判定未及时识别：%+v", result)
+		t.Fatalf("contradictory decision did not stop the scenario: %+v", result)
 	}
 }

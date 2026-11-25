@@ -4,28 +4,28 @@
   (and (number? n) (Double/isFinite (double n))))
 
 (defn create-rate-limiter
-  "创建一个空的全局限流器。每个用户独享整桶容量。"
+  "Creates an empty global limiter. Each user gets a bucket with the full capacity."
   [capacity leak-rate]
   (when-not (and (pos-int? capacity)
                  (finite-number? leak-rate) (pos? leak-rate))
-    (throw (IllegalArgumentException. "容量必须是正整数，漏速必须是有限正数")))
+    (throw (IllegalArgumentException. "Capacity must be a positive integer and leak rate must be positive and finite")))
   {:capacity capacity :leak_rate (bigdec leak-rate) :buckets {}})
 
 (defn allow-request
-  "按给定的 Unix 秒结算漏量，返回 [是否放行 新状态]。"
+  "Settles leakage at the given Unix time in seconds and returns [allowed? next-state]."
   [{:keys [capacity leak_rate buckets] :as limiter} user-id timestamp]
   (when-not (and (string? user-id) (not (empty? user-id)) (finite-number? timestamp))
-    (throw (IllegalArgumentException. "需要非空字符串用户 ID 和有限时间戳")))
+    (throw (IllegalArgumentException. "A nonempty user ID string and a finite timestamp are required")))
   (let [now (bigdec timestamp)
-        {:keys [level as_of]} (get buckets user-id {:level 0M :as_of now})
-        settled-at (max as_of now)
-        drained (max 0M (- level (* leak_rate (- settled-at as_of))))
-        allowed? (<= (inc drained) capacity)
-        bucket {:level (if allowed? (inc drained) drained) :as_of settled-at}]
+        {:keys [level updated_at]} (get buckets user-id {:level 0M :updated_at now})
+        settle_time (max updated_at now)
+        remaining (max 0M (- level (* leak_rate (- settle_time updated_at))))
+        allowed? (<= (inc remaining) capacity)
+        bucket {:level (if allowed? (inc remaining) remaining) :updated_at settle_time}]
     [allowed? (assoc-in limiter [:buckets user-id] bucket)]))
 
 (defn get-bucket-state
-  "读取最近一次判定的快照；未知用户返回 nil。"
+  "Returns the last settled snapshot, or nil for an unknown user."
   [limiter user-id]
   (when-let [bucket (get-in limiter [:buckets user-id])]
     (merge bucket (select-keys limiter [:capacity :leak_rate]))))

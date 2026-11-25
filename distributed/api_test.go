@@ -20,7 +20,7 @@ type stubStore struct {
 
 func (s *stubStore) ready(context.Context) error {
 	if s.fail {
-		return errors.New("测试断连")
+		return errors.New("Simulated disconnect")
 	}
 	return nil
 }
@@ -52,7 +52,7 @@ func request(handler http.Handler, method, path, body string) *httptest.Response
 func decodeResponse[T any](t *testing.T, w *httptest.ResponseRecorder, status int) T {
 	t.Helper()
 	if w.Code != status {
-		t.Fatalf("状态 %d，预期 %d，响应 %s", w.Code, status, w.Body)
+		t.Fatalf("status %d, want %d, response %s", w.Code, status, w.Body)
 	}
 	var v T
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
@@ -154,7 +154,7 @@ func TestHistogramBoundaries(t *testing.T) {
 	a.record(200, 501*time.Millisecond)
 	for i, n := range a.stats.LatencyBins {
 		if n != 1 {
-			t.Fatalf("区间 %d 有 %d 次", i, n)
+			t.Fatalf("histogram bucket %d has %d requests", i, n)
 		}
 	}
 }

@@ -31,7 +31,7 @@
     (let [first-response (check)]
       (is (= 200 (:status first-response)))
       (is (true? (:allowed (data first-response))))
-      (is (== 7 (get-in (data first-response) [:bucket :as_of]))))
+      (is (== 7 (get-in (data first-response) [:bucket :updated_at]))))
     (let [second-response (check)]
       (is (= 429 (:status second-response)))
       (is (false? (:allowed (data second-response))))
@@ -54,7 +54,7 @@
 
 (deftest business-error-metrics
   (let [app (http/handler (core/create-rate-limiter 1 1) "test"
-                          #(throw (ex-info "测试时钟故障" {})))]
+                          #(throw (ex-info "Test clock failure" {})))]
     (is (= 503 (:status (post app "{\"user_id\":\"alice\"}"))))
     (let [metrics (data (query app "/internal/metrics"))]
       (is (= 1 (:errors metrics)))
@@ -96,7 +96,7 @@
                                   (.build))]
                       (.send client req (HttpResponse$BodyHandlers/ofString))))
         max-id (apply str (repeat (- 65536 (count "{\"user_id\":\"\"}")) "x"))
-        ids ["." ".." "港/ +%?#" "a\nb" max-id]]
+        ids ["." ".." "\u6e2f/ +%?#" "a\nb" max-id]]
     (try
       (doseq [id ids]
         (let [payload (json/write-value-as-string {:user_id id})
