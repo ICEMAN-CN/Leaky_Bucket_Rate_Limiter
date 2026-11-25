@@ -32,6 +32,18 @@ curl -i http://127.0.0.1:8081/v1/check \
 curl -s http://127.0.0.1:8081/v1/buckets/alice
 ```
 
+Alice's first `POST /v1/check` request returns HTTP 200 with a body like this.
+
+```json
+{
+  "allowed": true,
+  "instance": "clojure",
+  "bucket": { "level": 1, "updated_at": 1700000000, "capacity": 5, "leak_rate": 1.0 }
+}
+```
+
+`updated_at` is the Unix time in seconds of the last rate-limit decision for this user, and a lookup returns the bucket snapshot recorded at that time.
+
 A check returns **200** when allowed or **429** when the bucket has less than one unit free. Both include the decision and the updated bucket. A lookup consumes no quota and returns **404** for an unknown user.
 
 ## Design and trade-offs
